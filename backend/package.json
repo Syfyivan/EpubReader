@@ -1,0 +1,29 @@
+{
+  "name": "epub-reader-backend",
+  "version": "1.0.0",
+  "description": "Backend API for EPUB Reader with AI capabilities",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "node dist/main.js",
+    "dev": "ts-node src/main.ts",
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.3.0",
+    "@nestjs/core": "^10.3.0",
+    "@nestjs/platform-express": "^10.3.0",
+    "@langchain/openai": "^0.3.0",
+    "@langchain/core": "^0.3.0",
+    "langchain": "^0.3.0",
+    "reflect-metadata": "^0.2.0",
+    "rxjs": "^7.8.1",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0",
+    "ts-node": "^10.9.2"
+  }
+}
+
