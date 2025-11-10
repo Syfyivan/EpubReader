@@ -4,6 +4,24 @@
   background: var(--bg-secondary);
 }
 
+/* 确保文本选择高亮显示 */
+.chapter-content {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
+  user-select: text;
+}
+
+.chapter-content::selection {
+  background-color: rgba(99, 102, 241, 0.3);
+  color: inherit;
+}
+
+.chapter-content::-moz-selection {
+  background-color: rgba(99, 102, 241, 0.3);
+  color: inherit;
+}
+
 /* 侧边栏样式 */
 .read-sidebar {
   width: 320px;
@@ -187,6 +205,7 @@
   margin: 0 auto;
   padding: 3rem 2rem;
   background: var(--bg-primary);
+  position: relative; /* 为提示框提供定位上下文 */
   min-height: 100vh;
   box-shadow: var(--shadow-lg);
 }
@@ -243,6 +262,150 @@
   box-shadow: var(--shadow-md);
   margin: 2rem 0;
   display: block;
+}
+
+/* 章节导航按钮 */
+.chapter-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 3rem;
+  padding: 2rem 0;
+  border-top: 2px solid var(--border-color);
+  gap: 1rem;
+}
+
+.nav-button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 2px solid var(--primary-color);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: var(--shadow-sm);
+}
+
+.nav-button:hover:not(:disabled) {
+  background: var(--primary-color);
+  color: white;
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.nav-button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: var(--shadow-sm);
+}
+
+.nav-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  border-color: var(--border-color);
+}
+
+.nav-button span:first-child {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.chapter-info {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+}
+
+/* 划线提示框 */
+.highlight-tooltip {
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.highlight-button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: var(--shadow-sm);
+}
+
+.highlight-button:hover {
+  background: var(--secondary-color);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.highlight-button:active {
+  transform: translateY(0);
+}
+
+.underline-icon {
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* 下划线样式 */
+.epub-highlight.underline {
+  text-decoration: underline !important;
+  text-decoration-thickness: 2px !important;
+  text-underline-offset: 3px !important;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  /* 确保链接可以正常点击 */
+  pointer-events: auto;
+}
+
+.epub-highlight.underline:hover {
+  text-decoration-thickness: 3px !important;
+  background-color: rgba(59, 130, 246, 0.1);
+  border-radius: 2px;
+}
+
+/* 确保划线元素内的链接可以正常点击 */
+.epub-highlight.underline a {
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  color: inherit;
+  text-decoration: underline !important;
+}
+
+.epub-highlight.underline a:hover {
+  color: var(--primary-color) !important;
 }
 
 .chapter-content blockquote {

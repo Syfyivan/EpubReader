@@ -10,6 +10,8 @@ export interface EpubChapter {
   title: string;
   href: string;
   order: number;
+  level?: number; // 层级深度，用于显示缩进
+  parentId?: string; // 父级ID
 }
 
 export interface EpubMetadata {
@@ -122,7 +124,7 @@ export class EpubParser {
 
     const textWriter = new zip.TextWriter();
     const opfXml = await opfEntry.getData(textWriter);
-    
+
     const parser = new DOMParser();
     const doc = parser.parseFromString(opfXml, 'text/xml');
 
@@ -132,6 +134,13 @@ export class EpubParser {
     // 解析章节信息
     this.parseManifest(doc);
     this.parseSpine(doc);
+
+    console.log('📚 初始章节列表:', this.chapters.map(ch => `${ch.id}: ${ch.title} -> ${ch.href}`));
+
+    // 等待目录解析完成
+    await this.enhanceChapterTitles(doc);
+
+    console.log('📚 增强后章节列表:', this.chapters.map(ch => `${ch.id}: ${ch.title} -> ${ch.href}`));
   }
 
   /**
@@ -202,42 +211,64 @@ export class EpubParser {
       const href = this.manifestMap.get(idref);
       if (!href) return;
 
-      // 尝试从 manifest 中获取章节标题
-      const title = `第 ${index + 1} 章`;
+      // 不设置默认标题，等待 NCX/NAV 中的真实标题
+      // 如果识别不到章节名字，标题将为空，稍后会被过滤掉
+      const normalizedHref = this.normalizePath(href);
       
       this.chapters.push({
         id: idref,
-        title,
-        href: this.normalizePath(href),
+        title: '', // 初始为空，等待NCX/NAV解析
+        href: normalizedHref,
         order: index,
       });
     });
-
-    // 尝试从 NCX 或 NAV 文件中获取更好的章节标题
-    this.enhanceChapterTitles(doc);
   }
 
   /**
    * 增强章节标题（从 NCX 或 NAV 文件）
    */
   private async enhanceChapterTitles(doc: Document): Promise<void> {
+    console.log('🔍 开始增强章节标题...');
+    
     // 查找 NCX 文件
     const ncxItem = doc.querySelector('item[media-type="application/x-dtbncx+xml"]');
     if (ncxItem) {
       const ncxHref = ncxItem.getAttribute('href');
       if (ncxHref) {
+        console.log('📖 找到NCX文件:', ncxHref);
         await this.parseNcx(this.normalizePath(ncxHref));
         return;
       }
     }
 
-    // 查找 NAV 文件
-    const navItem = doc.querySelector('item[properties*="nav"]');
+    // 查找 NAV 文件（多种方式）
+    let navItem = doc.querySelector('item[properties*="nav"]');
+    if (!navItem) {
+      // 尝试其他选择器
+      navItem = doc.querySelector('item[id*="nav"], item[id*="toc"]');
+    }
+    if (!navItem) {
+      // 尝试通过文件名查找
+      const allItems = doc.querySelectorAll('item');
+      for (const item of Array.from(allItems)) {
+        const href = item.getAttribute('href');
+        if (href && (href.toLowerCase().includes('nav') || href.toLowerCase().includes('toc'))) {
+          navItem = item;
+          break;
+        }
+      }
+    }
+
     if (navItem) {
       const navHref = navItem.getAttribute('href');
       if (navHref) {
+        console.log('📖 找到NAV文件:', navHref);
         await this.parseNav(this.normalizePath(navHref));
+      } else {
+        console.warn('⚠️ NAV项缺少href属性');
       }
+    } else {
+      console.warn('⚠️ 未找到NCX或NAV文件，将使用默认标题');
     }
   }
 
@@ -249,7 +280,10 @@ export class EpubParser {
       (entry) => entry.filename === ncxPath
     );
 
-    if (!ncxEntry || !ncxEntry.getData) return;
+    if (!ncxEntry || !ncxEntry.getData) {
+      console.warn('⚠️ NCX文件未找到或无法读取:', ncxPath);
+      return;
+    }
 
     try {
       const textWriter = new zip.TextWriter();
@@ -258,8 +292,15 @@ export class EpubParser {
       const parser = new DOMParser();
       const doc = parser.parseFromString(ncxXml, 'text/xml');
 
-      const navPoints = doc.querySelectorAll('navPoint');
-      navPoints.forEach((navPoint) => {
+      // 检查解析错误
+      const parserError = doc.querySelector('parsererror');
+      if (parserError) {
+        console.warn('⚠️ NCX XML解析错误:', parserError.textContent);
+        return;
+      }
+
+      // 递归解析navPoint，支持层次结构
+      const parseNavPoint = (navPoint: Element, level: number = 0, parentId?: string): void => {
         const label = navPoint.querySelector('navLabel text');
         const content = navPoint.querySelector('content');
         
@@ -267,16 +308,81 @@ export class EpubParser {
           const title = label.textContent?.trim() || '';
           const src = content.getAttribute('src') || '';
           const href = src.split('#')[0]; // 移除锚点
+          const normalizedHref = this.normalizePath(href);
+
+          if (!title) {
+            console.warn('⚠️ 导航点缺少标题:', src);
+            return;
+          }
+
+          // 生成唯一ID（如果没有对应的章节ID）
+          const navPointId = navPoint.getAttribute('id') || `nav-${Date.now()}-${Math.random()}`;
 
           // 找到对应的章节并更新标题
-          const chapter = this.chapters.find((ch) => ch.href.endsWith(href));
-          if (chapter && title) {
-            chapter.title = title;
+          const chapter = this.chapters.find((ch) => {
+            // 完全匹配
+            if (ch.href === normalizedHref) return true;
+            // 文件名匹配（忽略路径差异）
+            const chFileName = ch.href.split('/').pop()?.toLowerCase();
+            const hrefFileName = normalizedHref.split('/').pop()?.toLowerCase();
+            if (chFileName && hrefFileName && chFileName === hrefFileName) return true;
+            // 相对路径匹配
+            const chRelative = ch.href.replace(/^[^/]+\//, '');
+            const hrefRelative = normalizedHref.replace(/^[^/]+\//, '');
+            return chRelative === hrefRelative;
+          });
+          
+          if (chapter) {
+            // 更新现有章节（只更新有实际章节文件的）
+            if (title && title.trim()) {
+              chapter.title = title;
+              chapter.level = level;
+              if (parentId) chapter.parentId = parentId;
+              console.log(`✅ [L${level}] 匹配: "${title}" -> ${chapter.href}`);
+            }
+          } else {
+            // 不添加没有对应实际章节的目录项（如注释、目录等）
+            console.log(`⏭️ [L${level}] 跳过目录项（无对应章节）: "${title}" -> ${normalizedHref}`);
           }
+
+          // 递归处理子导航点
+          const childNavPoints = navPoint.querySelectorAll(':scope > navPoint');
+          childNavPoints.forEach((childNavPoint) => {
+            parseNavPoint(childNavPoint, level + 1, navPointId);
+          });
         }
+      };
+
+      // 获取所有顶级navPoint
+      const topNavPoints = doc.querySelectorAll('navMap > navPoint');
+      console.log(`📖 找到 ${topNavPoints.length} 个顶级导航点`);
+
+      // 如果没有顶级navPoint，尝试查找所有navPoint
+      const allNavPoints = topNavPoints.length > 0 
+        ? topNavPoints 
+        : doc.querySelectorAll('navPoint');
+
+      console.log(`📖 总共找到 ${allNavPoints.length} 个导航点`);
+
+      // 解析所有导航点
+      allNavPoints.forEach((navPoint) => {
+        parseNavPoint(navPoint, 0);
       });
+
+      // 按order排序，保持spine顺序
+      this.chapters.sort((a, b) => {
+        // 有order的按order排序，没有order的排在后面
+        if (a.order !== undefined && b.order !== undefined) {
+          return a.order - b.order;
+        }
+        if (a.order !== undefined) return -1;
+        if (b.order !== undefined) return 1;
+        return 0;
+      });
+
+      console.log(`📊 NCX解析完成: 共 ${this.chapters.length} 个章节/目录项`);
     } catch (error) {
-      console.warn('Failed to parse NCX:', error);
+      console.error('❌ Failed to parse NCX:', error);
     }
   }
 
@@ -288,7 +394,10 @@ export class EpubParser {
       (entry) => entry.filename === navPath
     );
 
-    if (!navEntry || !navEntry.getData) return;
+    if (!navEntry || !navEntry.getData) {
+      console.warn('⚠️ NAV文件未找到或无法读取:', navPath);
+      return;
+    }
 
     try {
       const textWriter = new zip.TextWriter();
@@ -297,23 +406,94 @@ export class EpubParser {
       const parser = new DOMParser();
       const doc = parser.parseFromString(navHtml, 'text/html');
 
-      const navItems = doc.querySelectorAll('nav[*|type="toc"] li, nav#toc li');
-      navItems.forEach((item) => {
+      // 递归解析NAV列表项，支持层次结构
+      const parseNavItem = (item: Element, level: number = 0, parentId?: string): void => {
         const link = item.querySelector('a');
         if (!link) return;
 
         const title = link.textContent?.trim() || '';
         const href = link.getAttribute('href') || '';
         const cleanHref = href.split('#')[0]; // 移除锚点
+        const normalizedHref = this.normalizePath(cleanHref);
+
+        if (!title) {
+          console.warn('⚠️ NAV项缺少标题:', href);
+          return;
+        }
+
+        // 生成唯一ID
+        const navItemId = item.id || link.id || `nav-${Date.now()}-${Math.random()}`;
 
         // 找到对应的章节并更新标题
-        const chapter = this.chapters.find((ch) => ch.href.endsWith(cleanHref));
-        if (chapter && title) {
-          chapter.title = title;
+        const chapter = this.chapters.find((ch) => {
+          // 完全匹配
+          if (ch.href === normalizedHref) return true;
+          // 文件名匹配（忽略路径差异）
+          const chFileName = ch.href.split('/').pop()?.toLowerCase();
+          const hrefFileName = normalizedHref.split('/').pop()?.toLowerCase();
+          if (chFileName && hrefFileName && chFileName === hrefFileName) return true;
+          // 相对路径匹配
+          const chRelative = ch.href.replace(/^[^/]+\//, '');
+          const hrefRelative = normalizedHref.replace(/^[^/]+\//, '');
+          return chRelative === hrefRelative;
+        });
+        
+        if (chapter) {
+          // 更新现有章节（只更新有实际章节文件的）
+          if (title && title.trim()) {
+            chapter.title = title;
+            chapter.level = level;
+            if (parentId) chapter.parentId = parentId;
+            console.log(`✅ [L${level}] NAV匹配: "${title}" -> ${chapter.href}`);
+          }
+        } else {
+          // 不添加没有对应实际章节的目录项（如注释、目录等）
+          console.log(`⏭️ [L${level}] NAV跳过目录项（无对应章节）: "${title}" -> ${normalizedHref}`);
         }
+
+        // 递归处理子列表项
+        const childItems = item.querySelectorAll(':scope > ol > li, :scope > ul > li');
+        childItems.forEach((childItem) => {
+          parseNavItem(childItem, level + 1, navItemId);
+        });
+      };
+
+      // 获取NAV容器
+      const navContainer = doc.querySelector('nav[*|type="toc"], nav#toc');
+      if (!navContainer) {
+        console.warn('⚠️ 未找到NAV容器');
+        return;
+      }
+
+      // 获取所有顶级列表项
+      const topItems = navContainer.querySelectorAll(':scope > ol > li, :scope > ul > li');
+      console.log(`📖 找到 ${topItems.length} 个顶级NAV项`);
+
+      // 如果没有顶级项，尝试查找所有li
+      const allItems = topItems.length > 0 
+        ? topItems 
+        : navContainer.querySelectorAll('li');
+
+      console.log(`📖 总共找到 ${allItems.length} 个NAV项`);
+
+      // 解析所有列表项
+      allItems.forEach((item) => {
+        parseNavItem(item, 0);
       });
+
+      // 按order排序，保持spine顺序
+      this.chapters.sort((a, b) => {
+        if (a.order !== undefined && b.order !== undefined) {
+          return a.order - b.order;
+        }
+        if (a.order !== undefined) return -1;
+        if (b.order !== undefined) return 1;
+        return 0;
+      });
+
+      console.log(`📊 NAV解析完成: 共 ${this.chapters.length} 个章节/目录项`);
     } catch (error) {
-      console.warn('Failed to parse NAV:', error);
+      console.error('❌ Failed to parse NAV:', error);
     }
   }
 
@@ -321,10 +501,23 @@ export class EpubParser {
    * 规范化路径
    */
   private normalizePath(path: string): string {
-    if (path.startsWith('/')) {
-      return path.substring(1);
+    if (!path) return '';
+    
+    // 移除开头的斜杠
+    let normalized = path.startsWith('/') ? path.substring(1) : path;
+    
+    // 如果路径不包含basePath，则添加
+    if (this.basePath && !normalized.startsWith(this.basePath)) {
+      normalized = this.basePath + normalized;
     }
-    return this.basePath + path;
+    
+    // 统一路径分隔符
+    normalized = normalized.replace(/\\/g, '/');
+    
+    // 移除重复的斜杠
+    normalized = normalized.replace(/\/+/g, '/');
+    
+    return normalized;
   }
 
   /**
@@ -418,7 +611,8 @@ export class EpubParser {
    * 获取章节列表
    */
   getChapters(): EpubChapter[] {
-    return this.chapters;
+    // 过滤掉标题为空的章节（识别不到章节名字的）
+    return this.chapters.filter(ch => ch.title && ch.title.trim().length > 0);
   }
 
   /**
@@ -440,7 +634,24 @@ export class EpubParser {
    */
   async getCoverImage(): Promise<Blob | null> {
     if (!this.metadata.cover) return null;
-    return await this.loadResource(this.metadata.cover);
+    
+    try {
+      // 检查封面文件是否存在
+      const coverPath = this.normalizePath(this.metadata.cover);
+      const coverEntry = this.entries.find(
+        (entry) => entry.filename === coverPath
+      );
+      
+      if (!coverEntry || !coverEntry.getData) {
+        console.warn('⚠️ 封面文件不存在:', coverPath);
+        return null;
+      }
+      
+      return await this.loadResource(this.metadata.cover);
+    } catch (error) {
+      console.warn('⚠️ 加载封面失败:', error);
+      return null;
+    }
   }
 
   /**
