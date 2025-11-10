@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import type { EpubChapter } from '../parse/parse';
 import type { Highlight, HighlightPosition } from '../highlight/HighlightSystem';
 import type { StoredHighlight } from '../storage/StorageManager';
@@ -42,6 +43,95 @@ export default function Read({ file, bookId }: ReadProps) {
   const virtualRendererRef = useRef<VirtualHighlightRenderer | null>(null);
   const storageRef = useRef<StorageManager | null>(null);
   const scrollObserverCleanupRef = useRef<(() => void) | null>(null);
+  const selectionIntervalRef = useRef<number | null>(null); // 用于保持选中文本高亮的定时器
+  const selectionRAFRef = useRef<number | null>(null); // 用于保持选中文本高亮的 RAF
+  const stickySelectionRef = useRef<HTMLSpanElement | null>(null); // 粘性高亮（旧方案兜底）
+  const tempSelectionRef = useRef<HTMLSpanElement | null>(null); // 临时高亮（虚拟选区可视化）
+  const removeStickySelection = useCallback(() => {
+    if (stickySelectionRef.current && stickySelectionRef.current.parentNode) {
+      const wrap = stickySelectionRef.current;
+      const parent = wrap.parentNode as Node;
+      while (wrap.firstChild) parent.insertBefore(wrap.firstChild, wrap);
+      parent.removeChild(wrap);
+      stickySelectionRef.current = null;
+    }
+  }, []);
+
+  // 临时高亮（跨文本节点）：对 Range 覆盖的每个文本片段进行 splitText 包装
+  const applyTemporaryHighlight = useCallback((range: Range): HTMLSpanElement | null => {
+    if (!contentRef.current) return null;
+    // 先移除旧的临时高亮
+    const cleanup = () => {
+      if (!contentRef.current) return;
+      const olds = contentRef.current.querySelectorAll('span.temporary-selection');
+      olds.forEach(el => {
+        const parent = el.parentNode as Node;
+        while (el.firstChild) parent.insertBefore(el.firstChild, el);
+        parent.removeChild(el);
+      });
+      tempSelectionRef.current = null;
+    };
+    cleanup();
+
+    const container = contentRef.current;
+    const createdSpans: HTMLSpanElement[] = [];
+
+    // 遍历容器中的文本节点，找到与 range 相交的片段
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+    let node: Node | null = walker.nextNode();
+    while (node) {
+      const textNode = node as Text;
+      if (textNode.length > 0) {
+        // 判断该文本节点是否与 range 相交
+        let start = 0;
+        let end = textNode.length;
+        // 如果文本节点在选区之前，comparePoint 会抛错，使用 try/catch
+        try {
+          const atStart = range.startContainer === textNode;
+          const atEnd = range.endContainer === textNode;
+          if (atStart || atEnd || range.intersectsNode(textNode)) {
+            if (atStart) start = range.startOffset;
+            if (atEnd) end = range.endOffset;
+            // 规范化范围
+            start = Math.max(0, Math.min(start, textNode.length));
+            end = Math.max(0, Math.min(end, textNode.length));
+            if (end > start) {
+              // splitText: [0,start)[start,start+len)[after...]
+              const first = start > 0 ? textNode.splitText(start) : textNode;
+              const len = end - start;
+              const middle = len < first.length ? first.splitText(len) : null;
+              const target = middle ? first : first; // first 即选中片段
+              const span = document.createElement('span');
+              span.className = 'temporary-selection';
+              target.parentNode?.insertBefore(span, target);
+              span.appendChild(target);
+              createdSpans.push(span);
+              // 修正 walker 位置（避免跳过）
+            }
+          }
+        } catch {
+          // 忽略无法比较的节点
+        }
+      }
+      node = walker.nextNode();
+    }
+
+    if (createdSpans.length === 0) return null;
+    // 缓存第一个 span 作为定位参考
+    tempSelectionRef.current = createdSpans[0];
+    return createdSpans[0];
+  }, []);
+
+  const removeTemporaryHighlight = useCallback(() => {
+    if (!contentRef.current) return;
+    const spans = contentRef.current.querySelectorAll('span.temporary-selection');
+    spans.forEach(span => {
+      const parent = span.parentNode as Node;
+      while (span.firstChild) parent.insertBefore(span.firstChild, span);
+      parent.removeChild(span);
+    });
+    tempSelectionRef.current = null;
+  }, []);
 
   const loadChapter = useCallback(async (chapterId: string, epubParser?: EpubParser) => {
     const parserToUse = epubParser || parser;
@@ -490,59 +580,13 @@ export default function Read({ file, bookId }: ReadProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file, bookId]); // 移除 loadChapter 依赖，避免无限循环
 
-  // 获取 Range 第一行的位置信息
-  const getFirstLineRect = (range: Range): DOMRect | null => {
-    try {
-      // 创建 Range 的副本
-      const firstLineRange = range.cloneRange();
-      
-      // 获取第一个文本节点
-      let node = range.startContainer;
-      if (node.nodeType !== Node.TEXT_NODE) {
-        // 如果是元素节点，查找第一个文本节点
-        const walker = document.createTreeWalker(
-          node,
-          NodeFilter.SHOW_TEXT,
-          null
-        );
-        const textNode = walker.nextNode();
-        if (!textNode) return null;
-        node = textNode;
-      }
-      
-      // 设置范围从开始位置到第一行结束
-      firstLineRange.setStart(node, range.startOffset);
-      
-      // 尝试找到第一行的结束位置
-      // 通过检查字符位置和换行符来确定
-      const textNode = node as Text;
-      const text = textNode.textContent || '';
-      const startOffset = range.startOffset;
-      
-      // 查找第一个换行符或段落边界
-      let endOffset = text.indexOf('\n', startOffset);
-      if (endOffset === -1) {
-        // 如果没有换行符，检查是否到达节点末尾
-        endOffset = text.length;
-      }
-      
-      // 如果第一行超出了当前节点，需要扩展到下一个节点
-      if (endOffset > textNode.length) {
-        endOffset = textNode.length;
-      }
-      
-      firstLineRange.setEnd(node, Math.min(endOffset, textNode.length));
-      
-      // 获取第一行的边界框
-      return firstLineRange.getBoundingClientRect();
-    } catch (error) {
-      console.warn('⚠️ 获取第一行位置失败:', error);
-      return null;
-    }
-  };
+  // 已不再需要第一行定位的辅助方法（保留位置以便后续扩展）
 
   // 处理文本选择，显示划线提示框
-  const handleTextSelection = useCallback(() => {
+  const handleTextSelection = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) {
       setShowHighlightTooltip(false);
@@ -605,42 +649,190 @@ export default function Read({ file, bookId }: ReadProps) {
 
       console.log('✅ 保存选中范围，文本:', text.substring(0, 30));
 
-      // 优化 tooltip 定位逻辑
-      const rect = range.getBoundingClientRect();
+      // 保持选中文本高亮：持续检查并重新应用选择
+      // 先清理之前的定时器和 RAF（如果有）
+      if (selectionIntervalRef.current) {
+        clearInterval(selectionIntervalRef.current);
+        selectionIntervalRef.current = null;
+      }
+      if (selectionRAFRef.current) {
+        cancelAnimationFrame(selectionRAFRef.current);
+        selectionRAFRef.current = null;
+      }
+      
+      // 立即设置选择状态，确保高亮显示
+      const currentSelection = window.getSelection();
+      if (currentSelection && range) {
+        try {
+          currentSelection.removeAllRanges();
+          currentSelection.addRange(range.cloneRange());
+        } catch (e) {
+          console.warn('⚠️ 设置选择状态失败:', e);
+        }
+      }
+      
+      // 保存 range 的副本，用于持续恢复
+      const savedRange = range.cloneRange();
+      
+      // 立即创建“临时高亮”（替代原生选区视觉），并清空原生 selection，避免后续干扰
+      const tempWrapper = applyTemporaryHighlight(savedRange);
+      try {
+        selection.removeAllRanges();
+      } catch { /* noop */ }
+
+      // 使用 requestAnimationFrame 来更及时地保持选择（每帧检查，约 60fps）
+      const keepSelectionWithRAF = () => {
+        const sel = window.getSelection();
+        // 检查提示框是否仍然显示
+        if (sel && savedRange && selectedRangeDataRef.current) {
+          // 检查当前选择是否有效
+          let needsRestore = false;
+          
+          if (sel.rangeCount === 0) {
+            // 选择被完全清除
+            needsRestore = true;
+          } else {
+            // 检查选择是否匹配
+            try {
+              const currentRange = sel.getRangeAt(0);
+              const currentText = currentRange.toString();
+              const savedText = savedRange.toString();
+              
+              // 如果文本不匹配，或者 range 的边界不匹配，需要恢复
+              if (currentText !== savedText) {
+                needsRestore = true;
+              } else {
+                // 检查边界节点是否匹配
+                if (currentRange.startContainer !== savedRange.startContainer ||
+                    currentRange.startOffset !== savedRange.startOffset ||
+                    currentRange.endContainer !== savedRange.endContainer ||
+                    currentRange.endOffset !== savedRange.endOffset) {
+                  needsRestore = true;
+                }
+              }
+            } catch {
+              needsRestore = true;
+            }
+          }
+          
+          // 如果需要恢复，立即恢复
+          if (needsRestore) {
+            try {
+              sel.removeAllRanges();
+              // 验证 savedRange 的节点是否仍在 DOM 中
+              if (document.contains(savedRange.startContainer) && 
+                  document.contains(savedRange.endContainer)) {
+                sel.addRange(savedRange.cloneRange());
+              } else {
+                // 如果节点不在 DOM 中，尝试从 position 恢复
+                if (selectedRangeDataRef.current?.position && highlightSystemRef.current && contentRef.current) {
+                  const restoredRange = highlightSystemRef.current.restoreRange(
+                    selectedRangeDataRef.current.position,
+                    contentRef.current
+                  );
+                  if (restoredRange && !restoredRange.collapsed) {
+                    sel.addRange(restoredRange);
+                  }
+                }
+              }
+            } catch {
+              // 选择可能已被清除，忽略错误
+            }
+          }
+          
+          // 继续下一帧检查
+          selectionRAFRef.current = requestAnimationFrame(keepSelectionWithRAF);
+        } else {
+          // 如果提示框已关闭，停止 RAF
+          if (selectionRAFRef.current) {
+            cancelAnimationFrame(selectionRAFRef.current);
+            selectionRAFRef.current = null;
+          }
+        }
+      };
+      
+      // 启动 RAF 循环，持续保持选中文本高亮
+      selectionRAFRef.current = requestAnimationFrame(keepSelectionWithRAF);
+      
+      // 同时使用 setInterval 作为备用机制（每 100ms 检查一次）
+      const keepSelectionAlive = () => {
+        const sel = window.getSelection();
+        if (sel && savedRange && selectedRangeDataRef.current) {
+          if (sel.rangeCount === 0) {
+            try {
+              // 验证节点是否仍在 DOM 中
+              if (document.contains(savedRange.startContainer) && 
+                  document.contains(savedRange.endContainer)) {
+                sel.addRange(savedRange.cloneRange());
+              }
+            } catch {
+              // 忽略错误
+            }
+          }
+        } else {
+          // 如果提示框已关闭，清理定时器和 RAF
+          if (selectionIntervalRef.current) {
+            clearInterval(selectionIntervalRef.current);
+            selectionIntervalRef.current = null;
+          }
+          if (selectionRAFRef.current) {
+            cancelAnimationFrame(selectionRAFRef.current);
+            selectionRAFRef.current = null;
+          }
+        }
+      };
+      
+      // 启动定时器作为备用机制
+      selectionIntervalRef.current = setInterval(keepSelectionAlive, 100);
+      
+      // 30秒后自动清理定时器和 RAF（防止内存泄漏）
+      setTimeout(() => {
+        if (selectionIntervalRef.current) {
+          clearInterval(selectionIntervalRef.current);
+          selectionIntervalRef.current = null;
+        }
+        if (selectionRAFRef.current) {
+          cancelAnimationFrame(selectionRAFRef.current);
+          selectionRAFRef.current = null;
+        }
+        // 超时后移除粘性选择
+        if (stickySelectionRef.current && stickySelectionRef.current.parentNode) {
+          const wrap = stickySelectionRef.current;
+          const parent = wrap.parentNode as Node;
+          while (wrap.firstChild) parent.insertBefore(wrap.firstChild, wrap);
+          parent.removeChild(wrap);
+          stickySelectionRef.current = null;
+        }
+      }, 30000);
+
+      // 优化 tooltip 定位逻辑：优先使用临时高亮的包裹元素几何信息
+      const baseRect: DOMRect = tempWrapper
+        ? (tempWrapper.getBoundingClientRect() as DOMRect)
+        : ((range.getClientRects().length > 0 ? (range.getClientRects()[0] as DOMRect) : (range.getBoundingClientRect() as DOMRect)));
       const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
       const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
       
-      // 获取第一行的位置（用于垂直定位）
-      const firstLineRect = getFirstLineRect(range);
       const TOOLTIP_OFFSET = 10; // tooltip 距离划线第一行的固定距离（像素）
       
       let tooltipX: number;
-      let tooltipY: number;
+      // 垂直方向由 tooltipYConst 计算
       
       // 判断是否占满一行（宽度接近容器宽度）
       const containerWidth = contentRef.current?.clientWidth || window.innerWidth;
-      const isFullLine = rect.width >= containerWidth * 0.9;
+      const isFullLine = baseRect.width >= containerWidth * 0.9;
       
       if (isFullLine) {
         // 如果占满一行，水平位置固定在屏幕中心
         tooltipX = scrollLeft + window.innerWidth / 2;
       } else {
         // 否则保持在勾选区域中心
-        tooltipX = rect.left + scrollLeft + rect.width / 2;
+        tooltipX = baseRect.left + scrollLeft + baseRect.width / 2;
       }
       
-      // 垂直方向：在划线第一行上方固定距离
-      if (firstLineRect) {
-        tooltipY = firstLineRect.top + scrollTop - TOOLTIP_OFFSET;
-      } else {
-        // 如果没有第一行信息，使用 range 的顶部
-        tooltipY = rect.top + scrollTop - TOOLTIP_OFFSET;
-      }
+      // 垂直方向：在所选文本的上方固定距离
+      const tooltipYConst = baseRect.top + scrollTop - TOOLTIP_OFFSET;
 
-      setTooltipPosition({
-        x: tooltipX,
-        y: tooltipY,
-      });
+      setTooltipPosition({ x: tooltipX, y: tooltipYConst });
 
       setShowHighlightTooltip(true);
     } catch (error) {
@@ -649,6 +841,26 @@ export default function Read({ file, bookId }: ReadProps) {
       selectedRangeDataRef.current = null;
     }
   }, []);
+
+  // 渲染后自动恢复临时高亮（防止组件重渲染把 DOM 包裹清掉）
+  useEffect(() => {
+    if (!showHighlightTooltip || !contentRef.current || !highlightSystemRef.current) return;
+    if (!selectedRangeDataRef.current) return;
+    try {
+      // 先移除可能被清空/半残留的临时高亮
+      removeTemporaryHighlight();
+      // 用 XPath 反序列化 range
+      const restored = highlightSystemRef.current.restoreRange(
+        selectedRangeDataRef.current.position,
+        contentRef.current
+      );
+      if (restored && !restored.collapsed) {
+        applyTemporaryHighlight(restored);
+      }
+    } catch {
+      // 忽略恢复失败
+    }
+  }, [chapterContent, chapterRenderKey, showHighlightTooltip, removeTemporaryHighlight, applyTemporaryHighlight]);
 
   // 创建划线
   const handleCreateHighlight = useCallback(() => {
@@ -835,12 +1047,91 @@ export default function Read({ file, bookId }: ReadProps) {
         });
       });
 
+      // 清理定时器和 RAF（划线已创建，不再需要保持选中状态）
+      if (selectionIntervalRef.current) {
+        clearInterval(selectionIntervalRef.current);
+        selectionIntervalRef.current = null;
+      }
+      if (selectionRAFRef.current) {
+        cancelAnimationFrame(selectionRAFRef.current);
+        selectionRAFRef.current = null;
+      }
+      
       // 清除选择和提示框
       selection.removeAllRanges();
       setShowHighlightTooltip(false);
       selectedRangeDataRef.current = null;
+      // 移除粘性选择
+      removeStickySelection();
+      // 移除临时高亮
+      removeTemporaryHighlight();
     }
-  }, [currentChapter, bookId, restoreAllHighlights]);
+  }, [currentChapter, bookId, restoreAllHighlights, removeStickySelection, removeTemporaryHighlight]);
+
+  // 在 tooltip 展示期间，监听 selection 变化并强制保持选区不消失
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      // 仅在我们已有保存的 range 且 tooltip 仍显示时处理
+      if (!selectedRangeDataRef.current || !showHighlightTooltip) return;
+      const sel = window.getSelection();
+      const saved = selectedRangeDataRef.current.range;
+      if (!sel) return;
+      try {
+        const needRestore =
+          sel.rangeCount === 0 ||
+          sel.getRangeAt(0).toString() !== saved.toString();
+        if (needRestore) {
+          // 如果原生 selection 消失，则兜底创建“粘性高亮”
+          if ((!sel || sel.rangeCount === 0) && contentRef.current) {
+            // 先移除旧的粘性选择
+            if (stickySelectionRef.current && stickySelectionRef.current.parentNode) {
+              const wrap = stickySelectionRef.current;
+              const parent = wrap.parentNode as Node;
+              while (wrap.firstChild) parent.insertBefore(wrap.firstChild, wrap);
+              parent.removeChild(wrap);
+              stickySelectionRef.current = null;
+            }
+            try {
+              const wrapper = document.createElement('span');
+              wrapper.className = 'sticky-selection';
+              const tryRange = saved.cloneRange();
+              try {
+                tryRange.surroundContents(wrapper);
+              } catch {
+                const contents = tryRange.cloneContents();
+                wrapper.appendChild(contents);
+                tryRange.deleteContents();
+                tryRange.insertNode(wrapper);
+              }
+              stickySelectionRef.current = wrapper;
+            } catch {
+              // 忽略粘性选择失败
+            }
+          }
+          // 验证节点仍在 DOM 中；否则尝试用 position 恢复
+          if (document.contains(saved.startContainer) && document.contains(saved.endContainer)) {
+            sel.removeAllRanges();
+            sel.addRange(saved.cloneRange());
+          } else if (selectedRangeDataRef.current.position && highlightSystemRef.current && contentRef.current) {
+            const restored = highlightSystemRef.current.restoreRange(
+              selectedRangeDataRef.current.position,
+              contentRef.current
+            );
+            if (restored && !restored.collapsed) {
+              sel.removeAllRanges();
+              sel.addRange(restored);
+            }
+          }
+        }
+      } catch {
+        // 忽略偶发错误
+      }
+    };
+    document.addEventListener('selectionchange', handleSelectionChange);
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange);
+    };
+  }, [showHighlightTooltip, removeStickySelection, removeTemporaryHighlight]);
 
   // 点击外部区域关闭提示框
   useEffect(() => {
@@ -848,9 +1139,22 @@ export default function Read({ file, bookId }: ReadProps) {
       if (showHighlightTooltip) {
         const target = e.target as HTMLElement;
         if (!target.closest('.highlight-tooltip') && !target.closest('.epub-highlight')) {
+          // 清理定时器和 RAF
+          if (selectionIntervalRef.current) {
+            clearInterval(selectionIntervalRef.current);
+            selectionIntervalRef.current = null;
+          }
+          if (selectionRAFRef.current) {
+            cancelAnimationFrame(selectionRAFRef.current);
+            selectionRAFRef.current = null;
+          }
           setShowHighlightTooltip(false);
           selectedRangeDataRef.current = null;
           window.getSelection()?.removeAllRanges();
+          // 移除粘性选择
+          removeStickySelection();
+          // 移除临时高亮
+          removeTemporaryHighlight();
         }
       }
     };
@@ -859,7 +1163,7 @@ export default function Read({ file, bookId }: ReadProps) {
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showHighlightTooltip]);
+  }, [showHighlightTooltip, removeStickySelection, removeTemporaryHighlight]);
 
   const handleAnalyzeContent = async () => {
     if (!currentChapter) return;
@@ -1087,29 +1391,122 @@ export default function Read({ file, bookId }: ReadProps) {
               }}
             />
             
-            {/* 划线提示框 */}
-            {showHighlightTooltip && (
-              <div
-                className="highlight-tooltip"
-                style={{
-                  position: 'absolute',
-                  left: `${tooltipPosition.x}px`,
-                  top: `${tooltipPosition.y}px`,
-                  transform: 'translateX(-50%)',
-                  zIndex: 1000,
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <button
-                  className="highlight-button"
-                  onClick={handleCreateHighlight}
-                  title="添加下划线"
+            {/* 划线提示框（使用 Portal 渲染到 body，避免影响正文 DOM） */}
+            {showHighlightTooltip &&
+              createPortal(
+                <div
+                  className="highlight-tooltip"
+                  style={{
+                    position: 'fixed',
+                    left: `${tooltipPosition.x}px`,
+                    top: `${tooltipPosition.y}px`,
+                    transform: 'translateX(-50%)',
+                    zIndex: 10000,
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                  }}
                 >
-                  <span className="underline-icon">⎺</span>
-                  <span>划线</span>
-                </button>
-              </div>
-            )}
+                  {/* 评论/注释组 */}
+                  <div className="tooltip-group">
+                    <button className="tooltip-button" title="评论" onMouseDown={(e) => e.preventDefault()}>
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M2 2a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2.5a1 1 0 0 1 .8.4l1.5 1.5a.5.5 0 0 0 .8-.4v-1a1 1 0 0 1 .4-.8l1.5-1.5H14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H2z"/>
+                      </svg>
+                      <span>评论</span>
+                    </button>
+                    <button className="tooltip-button" title="添加表情" onMouseDown={(e) => e.preventDefault()}>
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                        <path d="M4.285 9.567a.5.5 0 0 1 .683.183A3.498 3.498 0 0 0 8 11.5a3.498 3.498 0 0 0 3.032-1.75.5.5 0 1 1 .866.5A4.498 4.498 0 0 1 8 12.5a4.498 4.498 0 0 1-3.898-2.25.5.5 0 0 1 .183-.683zM7 6.5C7 7.328 6.552 8 6 8s-1-.672-1-1.5S5.448 5 6 5s1 .672 1 1.5zm4 0c0 .828-.448 1.5-1 1.5s-1-.672-1-1.5S9.448 5 10 5s1 .672 1 1.5z"/>
+                      </svg>
+                    </button>
+                    <button className="tooltip-button" title="绘图" onMouseDown={(e) => e.preventDefault()}>
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="tooltip-separator"></div>
+
+                  {/* 代码组 */}
+                  <div className="tooltip-group">
+                    <button className="tooltip-button" title="代码" onMouseDown={(e) => e.preventDefault()}>
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M5.854 4.854a.5.5 0 1 0-.708-.708l-3.5 3.5a.5.5 0 0 0 0 .708l3.5 3.5a.5.5 0 0 0 .708-.708L2.707 8l3.147-3.146zm4.292 0a.5.5 0 0 1 .708-.708l3.5 3.5a.5.5 0 0 1 0 .708l-3.5 3.5a.5.5 0 0 1-.708-.708L13.293 8l-3.147-3.146z"/>
+                      </svg>
+                      <span>代码</span>
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                        <path d="M6 9L1 4l1.5-1.5L6 6l3.5-3.5L11 4z"/>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="tooltip-separator"></div>
+
+                  {/* 格式化组 */}
+                  <div className="tooltip-group">
+                    <button className="tooltip-button" title="粗体" onMouseDown={(e) => e.preventDefault()}>
+                      <strong>B</strong>
+                    </button>
+                    <button className="tooltip-button" title="斜体" onMouseDown={(e) => e.preventDefault()}>
+                      <em>I</em>
+                    </button>
+                    <button className="tooltip-button" title="下划线" onMouseDown={(e) => e.preventDefault()}>
+                      <u>U</u>
+                    </button>
+                    <button className="tooltip-button" title="删除线" onMouseDown={(e) => e.preventDefault()}>
+                      <s>S</s>
+                    </button>
+                    <button className="tooltip-button" title="数学公式" onMouseDown={(e) => e.preventDefault()}>
+                      <span>√x</span>
+                    </button>
+                    <button className="tooltip-button" title="链接" onMouseDown={(e) => e.preventDefault()}>
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M4.715 6.542 3.343 7.914a3 3 0 1 0 4.243 4.243l1.828-1.829A3 3 0 0 0 8.586 5.5L8 6.086a1.002 1.002 0 0 0-.154.199 2 2 0 0 1 .861 3.337L6.88 11.45a2 2 0 0 1-2.83-2.83l.793-.792a4.018 4.018 0 0 1-.128-1.287z"/>
+                        <path d="M6.586 4.672A3 3 0 0 0 7.414 9.5l.775-.776a2 2 0 0 1-.896-3.346L9.12 3.55a2 2 0 1 1 2.83 2.83l-1.829 1.828a3 3 0 1 0-4.243-4.243L6.586 4.672z"/>
+                      </svg>
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                        <path d="M6 9L1 4l1.5-1.5L6 6l3.5-3.5L11 4z"/>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="tooltip-separator"></div>
+
+                  {/* 颜色/更多选项组 */}
+                  <div className="tooltip-group">
+                    <button className="tooltip-button" title="颜色" onMouseDown={(e) => e.preventDefault()}>
+                      <span className="color-icon">A</span>
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                        <path d="M6 9L1 4l1.5-1.5L6 6l3.5-3.5L11 4z"/>
+                      </svg>
+                    </button>
+                    <div className="tooltip-separator-vertical"></div>
+                    <button className="tooltip-button" title="更多" onMouseDown={(e) => e.preventDefault()}>
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M3 9.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="tooltip-separator"></div>
+
+                  {/* 划线按钮 */}
+                  <button
+                    className="highlight-button"
+                    onClick={handleCreateHighlight}
+                    onMouseDown={(e) => e.preventDefault()}
+                    title="添加下划线"
+                  >
+                    <span className="underline-icon">⎺</span>
+                    <span>划线</span>
+                  </button>
+                </div>,
+                document.body
+              )}
             
             {/* 翻页按钮 */}
             <div className="chapter-navigation">
