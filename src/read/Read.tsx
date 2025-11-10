@@ -70,6 +70,7 @@ export default function Read({ file, bookId }: ReadProps) {
       setCurrentChapter(chapter);
       setChapterContent(content);
       setChapterRenderKey(prev => prev + 1); // 强制重新渲染
+      // 注意：不再使用 restoredChapterRef，因为每次 highlights 更新都会自动恢复
       console.log('✅ Chapter and content set in state, renderKey:', chapterRenderKey + 1);
 
       // 恢复划线的辅助函数
@@ -106,6 +107,9 @@ export default function Read({ file, bookId }: ReadProps) {
             if (contentRef.current) {
               console.log('🎨 开始渲染划线到DOM');
               highlightSystemRef.current.renderHighlights(contentRef.current, false);
+              
+              // 渲染所有笔记
+              highlightSystemRef.current.renderAllNotes(contentRef.current);
               console.log('✅ 划线渲染完成');
             }
           }
@@ -173,41 +177,144 @@ export default function Read({ file, bookId }: ReadProps) {
     }
   }, [parser, chapterRenderKey]);
 
-  // 监听章节内容变化，自动恢复划线
+  // 监听章节内容变化，自动恢复所有划线（确保划线永远保留）
   useEffect(() => {
     if (!chapterContent || !currentChapter || !contentRef.current || !highlightSystemRef.current) {
       return;
     }
 
-    // 延迟执行，确保 dangerouslySetInnerHTML 已完成
-    const timer = setTimeout(() => {
-      if (contentRef.current && highlightSystemRef.current) {
-        // 获取当前章节的所有划线
-        const chapterHighlights = highlights.filter((h) => {
-          const stored = h as StoredHighlight;
-          return stored.chapterId === currentChapter.id;
-        });
+    // 获取当前章节的所有划线
+    const chapterHighlights = highlights.filter((h) => {
+      const stored = h as StoredHighlight;
+      return stored.chapterId === currentChapter.id;
+    });
 
-        if (chapterHighlights.length > 0) {
-          console.log(`🔄 章节内容更新，恢复 ${chapterHighlights.length} 个划线`);
-          
-          // 设置容器
-          highlightSystemRef.current.setContainer(contentRef.current);
-          
-          // 清空并重新添加划线
-          highlightSystemRef.current.highlights.clear();
-          chapterHighlights.forEach((h) => {
-            highlightSystemRef.current!.highlights.set(h.id, h);
-          });
-          
-          // 渲染划线（不清除已有划线，避免闪现）
-          highlightSystemRef.current.renderHighlights(contentRef.current, false);
+    // 如果没有该章节的划线，直接返回
+    if (chapterHighlights.length === 0) {
+      return;
+    }
+
+    // 恢复划线的函数
+    const restoreAllHighlights = () => {
+      if (!contentRef.current || !highlightSystemRef.current) return;
+
+      console.log(`🔄 恢复当前章节的所有划线: ${chapterHighlights.length} 个`);
+      
+      // 设置容器
+      highlightSystemRef.current.setContainer(contentRef.current);
+      
+      // 先保存当前 HighlightSystem 中已有的划线（可能包含其他章节的）
+      const existingHighlights = new Map(highlightSystemRef.current.highlights);
+      
+      // 更新当前章节的划线到 HighlightSystem（合并，不清空其他章节的）
+      chapterHighlights.forEach((h) => {
+        highlightSystemRef.current!.highlights.set(h.id, h);
+      });
+      
+      // 只渲染当前章节的划线（通过检查是否在 chapterHighlights 中）
+      let successCount = 0;
+      let skipCount = 0;
+      let failCount = 0;
+      
+      chapterHighlights.forEach((highlight) => {
+        // 检查是否已存在（避免重复渲染）
+        const existing = contentRef.current!.querySelector(
+          `span.epub-highlight[data-highlight-id="${highlight.id}"]`
+        );
+        if (existing) {
+          console.log(`⏭️ 划线已存在，跳过: ${highlight.id}`);
+          skipCount++;
+          return;
         }
-      }
-    }, 100);
 
-    return () => clearTimeout(timer);
-  }, [chapterContent, currentChapter, highlights]);
+        console.log(`🔍 尝试恢复划线: ${highlight.id}`);
+        if (!highlightSystemRef.current) {
+          failCount++;
+          return;
+        }
+        
+        const range = highlightSystemRef.current.restoreRange(
+          highlight.position,
+          contentRef.current!,
+          highlight.text
+        );
+        
+        if (range) {
+          // 检查 range 是否在 container 内
+          if (!contentRef.current!.contains(range.commonAncestorContainer)) {
+            console.warn(`⚠️ Range不在container内: ${highlight.id}`);
+            failCount++;
+            return;
+          }
+
+          try {
+            const result = highlightSystemRef.current.wrapRangeWithHighlight(
+              range,
+              highlight.id,
+              highlight.color
+            );
+            if (result) {
+              console.log(`✅ 划线渲染成功: ${highlight.id}`);
+              successCount++;
+              
+              // 如果有笔记，插入笔记
+              if (highlight.notes && highlight.notes.length > 0 && highlightSystemRef.current) {
+                highlightSystemRef.current.insertNoteAfterHighlight(highlight.id, contentRef.current!);
+              }
+            } else {
+              console.warn(`⚠️ wrapRangeWithHighlight返回null: ${highlight.id}`);
+              failCount++;
+            }
+          } catch (e) {
+            console.error(`❌ 恢复高亮失败: ${highlight.id}`, e);
+            failCount++;
+          }
+        } else {
+          console.warn(`⚠️ Range恢复失败: ${highlight.id}`);
+          failCount++;
+        }
+      });
+
+      console.log(`📊 划线恢复完成: 成功 ${successCount}, 跳过 ${skipCount}, 失败 ${failCount}`);
+      
+      // 恢复其他章节的划线到 HighlightSystem（保持状态一致）
+      existingHighlights.forEach((h, id) => {
+        const stored = h as StoredHighlight;
+        if (stored.chapterId !== currentChapter.id) {
+          highlightSystemRef.current!.highlights.set(id, h);
+        }
+      });
+    };
+
+    // 使用 MutationObserver 确保 DOM 完全渲染后再恢复划线
+    const observer = new MutationObserver((_mutations, obs) => {
+      // 检查是否有文本内容，确保 DOM 已渲染
+      if (contentRef.current && contentRef.current.textContent && contentRef.current.textContent.trim().length > 0) {
+        obs.disconnect(); // 停止观察
+        restoreAllHighlights();
+      }
+    });
+
+    // 开始观察 DOM 变化
+    if (contentRef.current) {
+      observer.observe(contentRef.current, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+    }
+
+    // 备用方案：如果 MutationObserver 没有触发，使用延迟
+    const fallbackTimer = setTimeout(() => {
+      observer.disconnect();
+      restoreAllHighlights();
+    }, 500);
+
+    return () => {
+      observer.disconnect();
+      clearTimeout(fallbackTimer);
+    };
+  }, [chapterContent, currentChapter, highlights]); // 每次 highlights 更新都会触发恢复
 
   // 翻页功能
   const goToPreviousChapter = useCallback(() => {
@@ -332,6 +439,57 @@ export default function Read({ file, bookId }: ReadProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file, bookId]); // 移除 loadChapter 依赖，避免无限循环
 
+  // 获取 Range 第一行的位置信息
+  const getFirstLineRect = (range: Range): DOMRect | null => {
+    try {
+      // 创建 Range 的副本
+      const firstLineRange = range.cloneRange();
+      
+      // 获取第一个文本节点
+      let node = range.startContainer;
+      if (node.nodeType !== Node.TEXT_NODE) {
+        // 如果是元素节点，查找第一个文本节点
+        const walker = document.createTreeWalker(
+          node,
+          NodeFilter.SHOW_TEXT,
+          null
+        );
+        const textNode = walker.nextNode();
+        if (!textNode) return null;
+        node = textNode;
+      }
+      
+      // 设置范围从开始位置到第一行结束
+      firstLineRange.setStart(node, range.startOffset);
+      
+      // 尝试找到第一行的结束位置
+      // 通过检查字符位置和换行符来确定
+      const textNode = node as Text;
+      const text = textNode.textContent || '';
+      const startOffset = range.startOffset;
+      
+      // 查找第一个换行符或段落边界
+      let endOffset = text.indexOf('\n', startOffset);
+      if (endOffset === -1) {
+        // 如果没有换行符，检查是否到达节点末尾
+        endOffset = text.length;
+      }
+      
+      // 如果第一行超出了当前节点，需要扩展到下一个节点
+      if (endOffset > textNode.length) {
+        endOffset = textNode.length;
+      }
+      
+      firstLineRange.setEnd(node, Math.min(endOffset, textNode.length));
+      
+      // 获取第一行的边界框
+      return firstLineRange.getBoundingClientRect();
+    } catch (error) {
+      console.warn('⚠️ 获取第一行位置失败:', error);
+      return null;
+    }
+  };
+
   // 处理文本选择，显示划线提示框
   const handleTextSelection = useCallback(() => {
     const selection = window.getSelection();
@@ -396,14 +554,41 @@ export default function Read({ file, bookId }: ReadProps) {
 
       console.log('✅ 保存选中范围，文本:', text.substring(0, 30));
 
-      // 计算提示框位置（在选择文本的下方）
+      // 优化 tooltip 定位逻辑
       const rect = range.getBoundingClientRect();
       const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
       const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+      
+      // 获取第一行的位置（用于垂直定位）
+      const firstLineRect = getFirstLineRect(range);
+      const TOOLTIP_OFFSET = 10; // tooltip 距离划线第一行的固定距离（像素）
+      
+      let tooltipX: number;
+      let tooltipY: number;
+      
+      // 判断是否占满一行（宽度接近容器宽度）
+      const containerWidth = contentRef.current?.clientWidth || window.innerWidth;
+      const isFullLine = rect.width >= containerWidth * 0.9;
+      
+      if (isFullLine) {
+        // 如果占满一行，水平位置固定在屏幕中心
+        tooltipX = scrollLeft + window.innerWidth / 2;
+      } else {
+        // 否则保持在勾选区域中心
+        tooltipX = rect.left + scrollLeft + rect.width / 2;
+      }
+      
+      // 垂直方向：在划线第一行上方固定距离
+      if (firstLineRect) {
+        tooltipY = firstLineRect.top + scrollTop - TOOLTIP_OFFSET;
+      } else {
+        // 如果没有第一行信息，使用 range 的顶部
+        tooltipY = rect.top + scrollTop - TOOLTIP_OFFSET;
+      }
 
       setTooltipPosition({
-        x: rect.left + scrollLeft + rect.width / 2,
-        y: rect.bottom + scrollTop + 10,
+        x: tooltipX,
+        y: tooltipY,
       });
 
       setShowHighlightTooltip(true);
@@ -572,6 +757,11 @@ export default function Read({ file, bookId }: ReadProps) {
         highlightSystemRef.current.highlights.set(highlight.id, storedHighlight);
       }
       
+      // 保存到 IndexedDB（先保存，避免状态更新导致的问题）
+      storageRef.current.saveHighlight(storedHighlight);
+      console.log(`💾 已保存到 IndexedDB: ${highlight.id}`);
+      
+      // 更新状态（这可能会触发重新渲染，但我们已经保存了划线到 HighlightSystem）
       setHighlights((prev) => {
         const newHighlights = [...prev, storedHighlight];
         console.log(`📦 状态更新: 总共有 ${newHighlights.length} 个划线`);
@@ -585,12 +775,8 @@ export default function Read({ file, bookId }: ReadProps) {
         return newMap;
       });
 
-      // 保存到 IndexedDB
-      storageRef.current.saveHighlight(storedHighlight);
-      console.log(`💾 已保存到 IndexedDB: ${highlight.id}`);
-      
-      // 不需要重新渲染，因为已经通过 wrapRangeWithHighlight 直接应用了样式
-      // 如果重新渲染会清除刚创建的划线，导致闪现
+      // 注意：不需要手动恢复划线，因为 useEffect 会在 highlights 更新后自动恢复所有划线
+      // 这样可以确保所有划线（包括新创建的和已存在的）都会被正确恢复
 
       // 清除选择和提示框
       selection.removeAllRanges();

@@ -15,12 +15,27 @@ export interface HighlightPosition {
   timestamp: number;
 }
 
+export interface HighlightNote {
+  id: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface HighlightRelation {
+  type: "intersect" | "contains" | "contained" | "independent";
+  highlightId: string;
+}
+
 export interface Highlight {
   id: string;
   position: HighlightPosition;
   text: string;
   color: string;
-  note?: string;
+  note?: string; // 保留向后兼容
+  notes?: HighlightNote[]; // 多条笔记
+  relations?: HighlightRelation[]; // 与其他划线的关系
+  isCrossParagraph?: boolean; // 是否跨段落
   createdAt: number;
   updatedAt: number;
 }
@@ -457,17 +472,61 @@ export class HighlightSystem {
     const position = this.createPosition(selection, containerNode);
     if (!position) return null;
 
+    // 安全地检测是否跨段落，如果检测失败不影响划线创建
+    let isCrossParagraph = false;
+    try {
+      const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+      if (range) {
+        isCrossParagraph = this.isCrossParagraph(range);
+      }
+    } catch (error) {
+      console.warn("⚠️ 检测跨段落时出错，继续创建划线:", error);
+      isCrossParagraph = false;
+    }
+
     const highlight: Highlight = {
       id: this.generateId(),
       position,
       text: selection.toString(),
       color,
-      note,
+      note, // 保留向后兼容
+      notes: note
+        ? [
+            {
+              id: this.generateNoteId(),
+              content: note,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            },
+          ]
+        : undefined,
+      isCrossParagraph,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
 
     this.highlights.set(highlight.id, highlight);
+
+    // 异步更新与其他划线的关系，不阻塞划线创建
+    // 使用 setTimeout 确保划线先创建完成
+    setTimeout(() => {
+      try {
+        // 更新与其他划线的关系
+        this.updateRelations(highlight.id);
+
+        // 同时更新其他相关划线的关系（只更新前10个，避免性能问题）
+        let count = 0;
+        this.highlights.forEach((_other, otherId) => {
+          if (otherId !== highlight.id && count < 10) {
+            this.updateRelations(otherId);
+            count++;
+          }
+        });
+      } catch (error) {
+        console.warn("⚠️ 更新划线关系时出错，但不影响划线:", error);
+      }
+    }, 0);
+
     return highlight;
   }
 
@@ -513,6 +572,396 @@ export class HighlightSystem {
    */
   private generateId(): string {
     return `highlight-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * 生成笔记 ID
+   */
+  private generateNoteId(): string {
+    return `note-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * 检测 Range 是否跨段落
+   */
+  isCrossParagraph(range: Range): boolean {
+    if (!range || range.collapsed) return false;
+
+    try {
+      const startContainer = range.startContainer;
+      const endContainer = range.endContainer;
+
+      // 如果开始和结束容器不同，可能跨段落
+      if (startContainer !== endContainer) {
+        // 检查是否跨越了块级元素（如 p, div, h1-h6 等）
+        const blockElements = [
+          "P",
+          "DIV",
+          "H1",
+          "H2",
+          "H3",
+          "H4",
+          "H5",
+          "H6",
+          "LI",
+          "BLOCKQUOTE",
+        ];
+
+        let startBlock: Element | null = null;
+        let endBlock: Element | null = null;
+
+        // 查找开始和结束的块级元素
+        // 如果没有 container，使用 document.body 作为边界
+        const boundary = this.container || document.body;
+
+        let node: Node | null = startContainer;
+        while (node && node !== boundary && node !== document.body) {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const el = node as Element;
+            if (blockElements.includes(el.tagName)) {
+              startBlock = el;
+              break;
+            }
+          }
+          node = node.parentNode;
+        }
+
+        node = endContainer;
+        while (node && node !== boundary && node !== document.body) {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const el = node as Element;
+            if (blockElements.includes(el.tagName)) {
+              endBlock = el;
+              break;
+            }
+          }
+          node = node.parentNode;
+        }
+
+        // 如果开始和结束的块级元素不同，则跨段落
+        return (
+          startBlock !== null && endBlock !== null && startBlock !== endBlock
+        );
+      }
+
+      return false;
+    } catch (error) {
+      // 如果检测失败，默认返回 false（不跨段落）
+      console.warn("⚠️ 检测跨段落失败，默认返回 false:", error);
+      return false;
+    }
+  }
+
+  /**
+   * 检测两个划线的关系
+   */
+  detectRelation(
+    highlight1: Highlight,
+    highlight2: Highlight
+  ): HighlightRelation["type"] | null {
+    if (!this.container) return null;
+
+    try {
+      const range1 = this.restoreRange(
+        highlight1.position,
+        this.container,
+        highlight1.text
+      );
+      const range2 = this.restoreRange(
+        highlight2.position,
+        this.container,
+        highlight2.text
+      );
+
+      if (!range1 || !range2) return null;
+
+      // 基于 DOM 位置判断关系
+      // 计算文本位置（基于容器内的文本偏移）
+      const getTextOffset = (range: Range): number => {
+        let offset = 0;
+        const walker = document.createTreeWalker(
+          this.container!,
+          NodeFilter.SHOW_TEXT,
+          null
+        );
+
+        let node: Node | null;
+        while ((node = walker.nextNode())) {
+          if (node === range.startContainer) {
+            offset += range.startOffset;
+            break;
+          }
+          offset += (node as Text).length;
+        }
+        return offset;
+      };
+
+      const start1 = getTextOffset(range1);
+      const end1 = start1 + highlight1.text.length;
+      const start2 = getTextOffset(range2);
+      const end2 = start2 + highlight2.text.length;
+
+      // 判断关系
+      if (start1 <= start2 && end1 >= end2) {
+        // highlight1 包含 highlight2
+        return "contains";
+      } else if (start2 <= start1 && end2 >= end1) {
+        // highlight2 包含 highlight1
+        return "contained";
+      } else if (
+        (start1 < start2 && end1 > start2 && end1 < end2) ||
+        (start2 < start1 && end2 > start1 && end2 < end1)
+      ) {
+        // 交叉
+        return "intersect";
+      } else {
+        // 独立
+        return "independent";
+      }
+    } catch (error) {
+      console.error("检测划线关系失败:", error);
+      return null;
+    }
+  }
+
+  /**
+   * 更新划线的关系信息
+   */
+  updateRelations(highlightId: string): void {
+    const highlight = this.highlights.get(highlightId);
+    if (!highlight || !this.container) return;
+
+    try {
+      const relations: HighlightRelation[] = [];
+
+      // 与所有其他划线比较
+      this.highlights.forEach((other, otherId) => {
+        if (otherId === highlightId) return;
+
+        try {
+          const relationType = this.detectRelation(highlight, other);
+          if (relationType) {
+            relations.push({
+              type: relationType,
+              highlightId: otherId,
+            });
+          }
+        } catch (error) {
+          // 如果检测关系失败，跳过这个划线
+          console.warn(
+            `⚠️ 检测划线 ${highlightId} 与 ${otherId} 的关系失败:`,
+            error
+          );
+        }
+      });
+
+      highlight.relations = relations;
+      this.highlights.set(highlightId, highlight);
+    } catch (error) {
+      // 如果更新关系失败，不影响划线本身
+      console.warn(`⚠️ 更新划线 ${highlightId} 的关系信息失败:`, error);
+    }
+  }
+
+  /**
+   * 添加笔记到划线
+   */
+  addNote(highlightId: string, noteContent: string): HighlightNote | null {
+    const highlight = this.highlights.get(highlightId);
+    if (!highlight) return null;
+
+    const note: HighlightNote = {
+      id: this.generateNoteId(),
+      content: noteContent,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    if (!highlight.notes) {
+      highlight.notes = [];
+    }
+    highlight.notes.push(note);
+    highlight.updatedAt = Date.now();
+
+    this.highlights.set(highlightId, highlight);
+    return note;
+  }
+
+  /**
+   * 删除笔记
+   */
+  deleteNote(highlightId: string, noteId: string): boolean {
+    const highlight = this.highlights.get(highlightId);
+    if (!highlight || !highlight.notes) return false;
+
+    const index = highlight.notes.findIndex((n) => n.id === noteId);
+    if (index === -1) return false;
+
+    highlight.notes.splice(index, 1);
+    highlight.updatedAt = Date.now();
+    this.highlights.set(highlightId, highlight);
+    return true;
+  }
+
+  /**
+   * 更新笔记
+   */
+  updateNote(highlightId: string, noteId: string, content: string): boolean {
+    const highlight = this.highlights.get(highlightId);
+    if (!highlight || !highlight.notes) return false;
+
+    const note = highlight.notes.find((n) => n.id === noteId);
+    if (!note) return false;
+
+    note.content = content;
+    note.updatedAt = Date.now();
+    highlight.updatedAt = Date.now();
+    this.highlights.set(highlightId, highlight);
+    return true;
+  }
+
+  /**
+   * 在划线下一行插入笔记元素
+   * @param highlightId 划线 ID
+   * @param container 容器元素
+   * @returns 笔记容器元素
+   */
+  insertNoteAfterHighlight(
+    highlightId: string,
+    container: HTMLElement
+  ): HTMLElement | null {
+    const highlight = this.highlights.get(highlightId);
+    if (!highlight || !this.container) return null;
+
+    // 查找划线元素
+    const highlightElement = container.querySelector(
+      `span.epub-highlight[data-highlight-id="${highlightId}"]`
+    ) as HTMLElement;
+
+    if (!highlightElement) {
+      // 如果划线元素不存在，尝试恢复并渲染
+      const range = this.restoreRange(
+        highlight.position,
+        container,
+        highlight.text
+      );
+      if (range) {
+        this.wrapRangeWithHighlight(range, highlightId, highlight.color);
+        // 重新查找
+        const newElement = container.querySelector(
+          `span.epub-highlight[data-highlight-id="${highlightId}"]`
+        ) as HTMLElement;
+        if (newElement) {
+          return this.insertNoteElementAfter(newElement, highlight);
+        }
+      }
+      return null;
+    }
+
+    return this.insertNoteElementAfter(highlightElement, highlight);
+  }
+
+  /**
+   * 在元素后插入笔记元素
+   */
+  private insertNoteElementAfter(
+    highlightElement: HTMLElement,
+    highlight: Highlight
+  ): HTMLElement | null {
+    if (!highlight.notes || highlight.notes.length === 0) return null;
+
+    // 检查是否已存在笔记容器
+    const existingNoteContainer =
+      highlightElement.nextElementSibling as HTMLElement;
+    if (
+      existingNoteContainer &&
+      existingNoteContainer.classList.contains("epub-note-container")
+    ) {
+      // 更新现有笔记容器
+      this.updateNoteContainer(existingNoteContainer, highlight.notes);
+      return existingNoteContainer;
+    }
+
+    // 创建笔记容器
+    const noteContainer = document.createElement("div");
+    noteContainer.className = "epub-note-container";
+    noteContainer.dataset.highlightId = highlight.id;
+    noteContainer.style.marginTop = "8px";
+    noteContainer.style.marginBottom = "8px";
+    noteContainer.style.padding = "8px";
+    noteContainer.style.backgroundColor = "#f9fafb";
+    noteContainer.style.borderLeft = "3px solid #3b82f6";
+    noteContainer.style.borderRadius = "4px";
+
+    // 插入笔记内容
+    this.updateNoteContainer(noteContainer, highlight.notes);
+
+    // 插入到划线元素后
+    if (highlightElement.parentNode) {
+      highlightElement.parentNode.insertBefore(
+        noteContainer,
+        highlightElement.nextSibling
+      );
+    } else {
+      // 如果父节点不存在，尝试在下一个兄弟节点前插入
+      let nextSibling = highlightElement.nextSibling;
+      while (nextSibling && nextSibling.nodeType !== Node.ELEMENT_NODE) {
+        nextSibling = nextSibling.nextSibling;
+      }
+      if (nextSibling && nextSibling.parentNode) {
+        nextSibling.parentNode.insertBefore(noteContainer, nextSibling);
+      } else {
+        // 如果找不到合适的位置，在父节点末尾插入
+        highlightElement.parentElement?.appendChild(noteContainer);
+      }
+    }
+
+    return noteContainer;
+  }
+
+  /**
+   * 更新笔记容器内容
+   */
+  private updateNoteContainer(
+    container: HTMLElement,
+    notes: Highlight["notes"]
+  ): void {
+    if (!notes || notes.length === 0) {
+      container.style.display = "none";
+      return;
+    }
+
+    container.style.display = "block";
+    container.innerHTML = "";
+
+    // 按创建时间排序，顺序叠加显示
+    const sortedNotes = [...notes].sort((a, b) => a.createdAt - b.createdAt);
+
+    sortedNotes.forEach((note, index) => {
+      const noteElement = document.createElement("div");
+      noteElement.className = "epub-note-item";
+      noteElement.dataset.noteId = note.id;
+      noteElement.style.marginBottom =
+        index < sortedNotes.length - 1 ? "8px" : "0";
+      noteElement.style.padding = "4px 0";
+      noteElement.style.fontSize = "14px";
+      noteElement.style.color = "#374151";
+      noteElement.style.lineHeight = "1.5";
+      noteElement.textContent = note.content;
+
+      container.appendChild(noteElement);
+    });
+  }
+
+  /**
+   * 渲染所有划线的笔记
+   */
+  renderAllNotes(container: HTMLElement): void {
+    this.highlights.forEach((highlight) => {
+      if (highlight.notes && highlight.notes.length > 0) {
+        this.insertNoteAfterHighlight(highlight.id, container);
+      }
+    });
   }
 
   /**
