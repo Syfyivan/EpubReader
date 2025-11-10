@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import type { EpubChapter } from '../parse/parse';
 import type { Highlight, HighlightPosition } from '../highlight/HighlightSystem';
 import type { StoredHighlight } from '../storage/StorageManager';
@@ -177,8 +177,8 @@ export default function Read({ file, bookId }: ReadProps) {
     }
   }, [parser, chapterRenderKey]);
 
-  // 监听章节内容变化，自动恢复所有划线（确保划线永远保留）
-  useEffect(() => {
+  // 恢复划线的函数（提取出来，供多个地方使用）
+  const restoreAllHighlights = useCallback(() => {
     if (!chapterContent || !currentChapter || !contentRef.current || !highlightSystemRef.current) {
       return;
     }
@@ -194,104 +194,147 @@ export default function Read({ file, bookId }: ReadProps) {
       return;
     }
 
-    // 恢复划线的函数
-    const restoreAllHighlights = () => {
-      if (!contentRef.current || !highlightSystemRef.current) return;
+    if (!contentRef.current || !highlightSystemRef.current) return;
 
-      console.log(`🔄 恢复当前章节的所有划线: ${chapterHighlights.length} 个`);
-      
-      // 设置容器
-      highlightSystemRef.current.setContainer(contentRef.current);
-      
-      // 先保存当前 HighlightSystem 中已有的划线（可能包含其他章节的）
-      const existingHighlights = new Map(highlightSystemRef.current.highlights);
-      
-      // 更新当前章节的划线到 HighlightSystem（合并，不清空其他章节的）
-      chapterHighlights.forEach((h) => {
-        highlightSystemRef.current!.highlights.set(h.id, h);
-      });
-      
-      // 只渲染当前章节的划线（通过检查是否在 chapterHighlights 中）
-      let successCount = 0;
-      let skipCount = 0;
-      let failCount = 0;
-      
-      chapterHighlights.forEach((highlight) => {
-        // 检查是否已存在（避免重复渲染）
-        const existing = contentRef.current!.querySelector(
-          `span.epub-highlight[data-highlight-id="${highlight.id}"]`
-        );
-        if (existing) {
-          console.log(`⏭️ 划线已存在，跳过: ${highlight.id}`);
-          skipCount++;
-          return;
-        }
+    console.log(`🔄 恢复当前章节的所有划线: ${chapterHighlights.length} 个`);
+    
+    // 设置容器
+    highlightSystemRef.current.setContainer(contentRef.current);
+    
+    // 先保存当前 HighlightSystem 中已有的划线（可能包含其他章节的）
+    const existingHighlights = new Map(highlightSystemRef.current.highlights);
+    
+    // 更新当前章节的划线到 HighlightSystem（合并，不清空其他章节的）
+    chapterHighlights.forEach((h) => {
+      highlightSystemRef.current!.highlights.set(h.id, h);
+    });
+    
+    // 只渲染当前章节的划线（通过检查是否在 chapterHighlights 中）
+    let successCount = 0;
+    let skipCount = 0;
+    let failCount = 0;
+    
+    chapterHighlights.forEach((highlight) => {
+      // 检查是否已存在（避免重复渲染）
+      const existing = contentRef.current!.querySelector(
+        `span.epub-highlight[data-highlight-id="${highlight.id}"]`
+      );
+      if (existing) {
+        console.log(`⏭️ 划线已存在，跳过: ${highlight.id}`);
+        skipCount++;
+        return;
+      }
 
-        console.log(`🔍 尝试恢复划线: ${highlight.id}`);
-        if (!highlightSystemRef.current) {
+      console.log(`🔍 尝试恢复划线: ${highlight.id}`);
+      if (!highlightSystemRef.current) {
+        failCount++;
+        return;
+      }
+      
+      const range = highlightSystemRef.current.restoreRange(
+        highlight.position,
+        contentRef.current!,
+        highlight.text
+      );
+      
+      if (range) {
+        // 检查 range 是否在 container 内
+        if (!contentRef.current!.contains(range.commonAncestorContainer)) {
+          console.warn(`⚠️ Range不在container内: ${highlight.id}`);
           failCount++;
           return;
         }
-        
-        const range = highlightSystemRef.current.restoreRange(
-          highlight.position,
-          contentRef.current!,
-          highlight.text
-        );
-        
-        if (range) {
-          // 检查 range 是否在 container 内
-          if (!contentRef.current!.contains(range.commonAncestorContainer)) {
-            console.warn(`⚠️ Range不在container内: ${highlight.id}`);
-            failCount++;
-            return;
-          }
 
-          try {
-            const result = highlightSystemRef.current.wrapRangeWithHighlight(
-              range,
-              highlight.id,
-              highlight.color
-            );
-            if (result) {
-              console.log(`✅ 划线渲染成功: ${highlight.id}`);
-              successCount++;
-              
-              // 如果有笔记，插入笔记
-              if (highlight.notes && highlight.notes.length > 0 && highlightSystemRef.current) {
-                highlightSystemRef.current.insertNoteAfterHighlight(highlight.id, contentRef.current!);
-              }
-            } else {
-              console.warn(`⚠️ wrapRangeWithHighlight返回null: ${highlight.id}`);
-              failCount++;
+        try {
+          const result = highlightSystemRef.current.wrapRangeWithHighlight(
+            range,
+            highlight.id,
+            highlight.color
+          );
+          if (result) {
+            console.log(`✅ 划线渲染成功: ${highlight.id}`);
+            successCount++;
+            
+            // 如果有笔记，插入笔记
+            if (highlight.notes && highlight.notes.length > 0 && highlightSystemRef.current) {
+              highlightSystemRef.current.insertNoteAfterHighlight(highlight.id, contentRef.current!);
             }
-          } catch (e) {
-            console.error(`❌ 恢复高亮失败: ${highlight.id}`, e);
+          } else {
+            console.warn(`⚠️ wrapRangeWithHighlight返回null: ${highlight.id}`);
             failCount++;
           }
-        } else {
-          console.warn(`⚠️ Range恢复失败: ${highlight.id}`);
+        } catch (e) {
+          console.error(`❌ 恢复高亮失败: ${highlight.id}`, e);
           failCount++;
         }
-      });
+      } else {
+        console.warn(`⚠️ Range恢复失败: ${highlight.id}`);
+        failCount++;
+      }
+    });
 
-      console.log(`📊 划线恢复完成: 成功 ${successCount}, 跳过 ${skipCount}, 失败 ${failCount}`);
-      
-      // 恢复其他章节的划线到 HighlightSystem（保持状态一致）
-      existingHighlights.forEach((h, id) => {
+    console.log(`📊 划线恢复完成: 成功 ${successCount}, 跳过 ${skipCount}, 失败 ${failCount}`);
+    
+    // 恢复其他章节的划线到 HighlightSystem（保持状态一致）
+    existingHighlights.forEach((h, id) => {
+      const stored = h as StoredHighlight;
+      if (stored.chapterId !== currentChapter.id) {
+        highlightSystemRef.current!.highlights.set(id, h);
+      }
+    });
+  }, [chapterContent, currentChapter, highlights]);
+
+  // 使用 useLayoutEffect 在 DOM 更新后立即恢复划线（同步执行，避免闪现）
+  useLayoutEffect(() => {
+    if (!chapterContent || !currentChapter || !contentRef.current || !highlightSystemRef.current) {
+      return;
+    }
+
+    // 立即尝试恢复（在浏览器绘制之前）
+    if (contentRef.current.textContent && contentRef.current.textContent.trim().length > 0) {
+      // 检查是否已有划线，如果没有或数量不对，立即恢复
+      const existingHighlights = contentRef.current.querySelectorAll('span.epub-highlight');
+      const chapterHighlights = highlights.filter((h) => {
         const stored = h as StoredHighlight;
-        if (stored.chapterId !== currentChapter.id) {
-          highlightSystemRef.current!.highlights.set(id, h);
-        }
+        return stored.chapterId === currentChapter.id;
       });
-    };
+      
+      // 如果已有划线数量少于应该有的数量，立即恢复
+      if (existingHighlights.length < chapterHighlights.length) {
+        restoreAllHighlights();
+      }
+    }
+  }, [chapterContent, currentChapter, restoreAllHighlights, highlights]);
 
-    // 使用 MutationObserver 确保 DOM 完全渲染后再恢复划线
-    const observer = new MutationObserver((_mutations, obs) => {
+  // 使用 useEffect 作为备用方案（处理异步情况）
+  // 监听 DOM 变化，一旦发现划线被清除就立即恢复
+  useEffect(() => {
+    if (!chapterContent || !currentChapter || !contentRef.current || !highlightSystemRef.current) {
+      return;
+    }
+
+    // 获取当前章节应该有的划线数量
+    const chapterHighlights = highlights.filter((h) => {
+      const stored = h as StoredHighlight;
+      return stored.chapterId === currentChapter.id;
+    });
+
+    if (chapterHighlights.length === 0) {
+      return;
+    }
+
+    // 使用 MutationObserver 监听 DOM 变化，一旦发现划线被清除就立即恢复
+    const observer = new MutationObserver(() => {
       // 检查是否有文本内容，确保 DOM 已渲染
       if (contentRef.current && contentRef.current.textContent && contentRef.current.textContent.trim().length > 0) {
-        obs.disconnect(); // 停止观察
-        restoreAllHighlights();
+        // 检查是否已有划线，如果数量不对就恢复
+        const existingHighlights = contentRef.current.querySelectorAll('span.epub-highlight');
+        
+        // 如果划线数量少于应该有的数量，立即恢复
+        if (existingHighlights.length < chapterHighlights.length) {
+          console.log(`⚠️ 检测到划线被清除，当前 ${existingHighlights.length} 个，应该 ${chapterHighlights.length} 个，立即恢复`);
+          restoreAllHighlights();
+        }
       }
     });
 
@@ -304,17 +347,25 @@ export default function Read({ file, bookId }: ReadProps) {
       });
     }
 
-    // 备用方案：如果 MutationObserver 没有触发，使用延迟
-    const fallbackTimer = setTimeout(() => {
-      observer.disconnect();
-      restoreAllHighlights();
-    }, 500);
+    // 初始检查：如果划线数量不对，立即恢复
+    const checkAndRestore = () => {
+      if (contentRef.current) {
+        const existingHighlights = contentRef.current.querySelectorAll('span.epub-highlight');
+        if (existingHighlights.length < chapterHighlights.length) {
+          console.log(`⚠️ 初始检查：划线数量不对，立即恢复`);
+          restoreAllHighlights();
+        }
+      }
+    };
+
+    // 延迟检查，确保 DOM 已渲染
+    const checkTimer = setTimeout(checkAndRestore, 100);
 
     return () => {
       observer.disconnect();
-      clearTimeout(fallbackTimer);
+      clearTimeout(checkTimer);
     };
-  }, [chapterContent, currentChapter, highlights]); // 每次 highlights 更新都会触发恢复
+  }, [chapterContent, currentChapter, restoreAllHighlights, highlights]);
 
   // 翻页功能
   const goToPreviousChapter = useCallback(() => {
@@ -775,15 +826,21 @@ export default function Read({ file, bookId }: ReadProps) {
         return newMap;
       });
 
-      // 注意：不需要手动恢复划线，因为 useEffect 会在 highlights 更新后自动恢复所有划线
-      // 这样可以确保所有划线（包括新创建的和已存在的）都会被正确恢复
+      // 创建新划线后，立即恢复所有划线（包括新创建的和已存在的）
+      // 使用 requestAnimationFrame 确保在 DOM 更新后执行
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          // 立即恢复所有划线，确保新创建的划线立即显示，已存在的划线不被清除
+          restoreAllHighlights();
+        });
+      });
 
       // 清除选择和提示框
       selection.removeAllRanges();
       setShowHighlightTooltip(false);
       selectedRangeDataRef.current = null;
     }
-  }, [currentChapter, bookId]);
+  }, [currentChapter, bookId, restoreAllHighlights]);
 
   // 点击外部区域关闭提示框
   useEffect(() => {
