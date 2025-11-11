@@ -1234,6 +1234,193 @@ export default function Read({
     }
   }, [currentChapter, bookId, restoreAllHighlights, clearTempHighlightOverlay]);
 
+  // 创建划线并添加一条笔记
+  const handleAddNote = useCallback(async () => {
+    // 先基于当前选择创建划线（与 handleCreateHighlight 相同的准备阶段）
+    clearTempHighlightOverlay();
+    if (!selectedRangeDataRef.current || !highlightSystemRef.current || !storageRef.current || !currentChapter || !contentRef.current) {
+      console.warn('⚠️ 创建笔记缺少必要参数');
+      return;
+    }
+    // 复用创建流程以拿到 highlight
+    // 获取有效的 range
+    let rangeToUse: Range | null = null;
+    try {
+      const rangeData = selectedRangeDataRef.current;
+      if (rangeData.position && highlightSystemRef.current) {
+        highlightSystemRef.current.setContainer(contentRef.current);
+        const restoredRange = highlightSystemRef.current.restoreRange(rangeData.position, contentRef.current);
+        if (restoredRange && !restoredRange.collapsed) {
+          const text = restoredRange.toString().trim();
+          if (text.length > 0) {
+            rangeToUse = restoredRange;
+          }
+        }
+      }
+      if (!rangeToUse && rangeData.range) {
+        const savedRange = rangeData.range as Range;
+        if (document.contains(savedRange.startContainer) && document.contains(savedRange.endContainer)) {
+          try {
+            const testRange = savedRange.cloneRange();
+            if (!testRange.collapsed && testRange.toString().trim().length > 0) {
+              rangeToUse = testRange;
+            }
+          } catch {}
+        }
+      }
+      if (!rangeToUse) {
+        const selection = window.getSelection();
+        if (selection && selection.rangeCount > 0) {
+          const currentRange = selection.getRangeAt(0);
+          if (!currentRange.collapsed && currentRange.toString().trim().length > 0 && contentRef.current.contains(currentRange.commonAncestorContainer)) {
+            rangeToUse = currentRange.cloneRange();
+          }
+        }
+      }
+      if (!rangeToUse) {
+        console.warn('❌ 无法获取有效的 range，请重新选择文字');
+        setShowHighlightTooltip(false);
+        selectedRangeDataRef.current = null;
+        return;
+      }
+    } catch (error) {
+      console.error('❌ 获取 range 时出错:', error);
+      setShowHighlightTooltip(false);
+      selectedRangeDataRef.current = null;
+      return;
+    }
+
+    // 临时设置 selection 以复用 createHighlight
+    const selection = window.getSelection();
+    if (selection) {
+      try {
+        selection.removeAllRanges();
+        selection.addRange(rangeToUse);
+      } catch {}
+    }
+
+    // 先创建划线
+    const highlight = highlightSystemRef.current.createHighlight(
+      window.getSelection(),
+      contentRef.current || undefined,
+      '#3b82f6'
+    );
+
+    if (!highlight) {
+      console.warn('❌ 创建划线失败，无法添加笔记');
+      return;
+    }
+
+    // 提示输入笔记
+    const noteContent = window.prompt('为该划线添加一条笔记：', '');
+    if (noteContent === null) {
+      // 用户取消，仍保留划线
+      // 将划线保存并渲染，与 handleCreateHighlight 相同
+      const storedHighlight: StoredHighlight = {
+        ...highlight,
+        bookId,
+        chapterId: currentChapter.id,
+      };
+      highlightSystemRef.current.highlights.set(highlight.id, storedHighlight);
+      storageRef.current.saveHighlight(storedHighlight);
+      setHighlights((prev) => [...prev, storedHighlight]);
+      setHighlightChapterMap((prev) => {
+        const newMap = new Map(prev);
+        newMap.set(highlight.id, currentChapter.id);
+        return newMap;
+      });
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          restoreAllHighlights();
+        });
+      });
+      selection?.removeAllRanges();
+      clearTempHighlightOverlay();
+      setShowHighlightTooltip(false);
+      selectedRangeDataRef.current = null;
+      return;
+    }
+
+    const now = Date.now();
+    const noteObj = {
+      id: `note-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      content: noteContent.trim(),
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    // 将笔记挂到 highlight 上（多条堆叠）
+    const updatedHighlight: StoredHighlight = {
+      ...highlight,
+      bookId,
+      chapterId: currentChapter.id,
+      notes: [...(highlight.notes || []), noteObj],
+    };
+
+    // 立即在 DOM 中渲染划线（若未渲染），并插入笔记到划线下一行（多条顺序叠加）
+    try {
+      if (contentRef.current && highlightSystemRef.current && rangeToUse) {
+        if (!contentRef.current.querySelector(`span.epub-highlight[data-highlight-id="${highlight.id}"]`)) {
+          highlightSystemRef.current.wrapRangeWithHighlight(rangeToUse, highlight.id, highlight.color);
+        }
+        // 更新系统内存并插入笔记
+        highlightSystemRef.current.highlights.set(highlight.id, updatedHighlight);
+        highlightSystemRef.current.insertNoteAfterHighlight(highlight.id, contentRef.current);
+      }
+    } catch (e) {
+      console.warn('⚠️ 渲染划线/插入笔记失败，将在恢复时统一渲染', e);
+    }
+
+    // 持久化
+    storageRef.current.saveHighlight(updatedHighlight);
+    // 同步 React 状态
+    setHighlights((prev) => {
+      // 替换该 highlight
+      const idx = prev.findIndex((h) => h.id === highlight.id);
+      if (idx === -1) return [...prev, updatedHighlight];
+      const next = [...prev];
+      next[idx] = updatedHighlight;
+      return next;
+    });
+    setHighlightChapterMap((prev) => {
+      const newMap = new Map(prev);
+      newMap.set(highlight.id, currentChapter.id);
+      return newMap;
+    });
+
+    // 触发一次恢复，保证多条笔记时正确叠加
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        restoreAllHighlights();
+      });
+    });
+
+    // 清理 UI
+    selection?.removeAllRanges();
+    clearTempHighlightOverlay();
+    setShowHighlightTooltip(false);
+    selectedRangeDataRef.current = null;
+  }, [currentChapter, bookId, restoreAllHighlights, clearTempHighlightOverlay]);
+
+  // AI 启发：基于当前选择文本进行分析
+  const handleAIInspire = useCallback(async () => {
+    const data = selectedRangeDataRef.current;
+    const selectedText = data?.text?.trim() || '';
+    if (!selectedText) return;
+    setLoading(true);
+    try {
+      const analysis = await aiClient.analyzeContent(selectedText);
+      setAiAnalysis(analysis);
+      setShowAnalysis(true);
+    } catch (e) {
+      console.error('AI 启发失败:', e);
+      alert('AI 启发失败，请检查后端与 API 配置');
+    } finally {
+      setLoading(false);
+      // 不强制清除选择，保持用户上下文
+    }
+  }, []);
+
   // 点击外部区域关闭提示框
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -1553,6 +1740,22 @@ export default function Read({
                 >
                   <span className="underline-icon">⎺</span>
                   <span>划线</span>
+                </button>
+                <button
+                  className="highlight-button"
+                  onClick={handleAddNote}
+                  title="添加笔记"
+                >
+                  <span>📝</span>
+                  <span>记笔记</span>
+                </button>
+                <button
+                  className="highlight-button"
+                  onClick={handleAIInspire}
+                  title="AI 启发思考"
+                >
+                  <span>✨</span>
+                  <span>AI 启发</span>
                 </button>
               </div>
             )}
