@@ -22,6 +22,7 @@
   padding: 1rem 1.75rem;
   min-height: 72px;
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(236, 72, 153, 0.18));
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid rgba(99, 102, 241, 0.25);
   box-shadow: 0 6px 24px -12px rgba(99, 102, 241, 0.6);
@@ -468,6 +469,73 @@
   font-size: 1.2rem;
   font-weight: 700;
   line-height: 1;
+}
+
+/* 管理现有划线的浮层 */
+.highlight-manage-tooltip {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  z-index: 1001;
+  display: flex;
+  gap: 0.5rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.6rem;
+  box-shadow: var(--shadow-md);
+}
+
+/* AI 可拖动面板 */
+.ai-analysis-draggable {
+  position: fixed;
+  z-index: 1100;
+  min-width: 360px;
+  max-width: 520px;
+  max-height: 60vh;
+  overflow: hidden;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+}
+
+.ai-panel-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  cursor: move;
+  background: var(--bg-secondary);
+  border-top-left-radius: var(--radius-lg);
+  border-top-right-radius: var(--radius-lg);
+}
+
+.ai-title {
+  font-weight: 600;
+}
+
+.ai-close {
+  border: none;
+  background: transparent;
+  font-size: 1.25rem;
+  cursor: pointer;
+}
+
+.ai-panel-body {
+  padding: 0.75rem;
+  max-height: calc(60vh - 44px);
+  overflow: auto;
+}
+
+.ai-stream {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.95rem;
+  line-height: 1.6;
 }
 
 /* 下划线样式 */

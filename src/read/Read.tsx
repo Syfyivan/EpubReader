@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { flushSync } from 'react-dom';
 import type { EpubChapter } from '../parse/parse';
 import type { Highlight, HighlightPosition } from '../highlight/HighlightSystem';
 import type { StoredHighlight } from '../storage/StorageManager';
@@ -38,6 +39,9 @@ export default function Read({
   const [highlightChapterMap, setHighlightChapterMap] = useState<Map<string, string>>(new Map()); // 存储 highlightId -> chapterId 的映射
   const [bookMetadata, setBookMetadata] = useState<BookMetadata | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
+  const [aiStreamingText, setAiStreamingText] = useState<string>('');
+  const [aiPanelPos, setAiPanelPos] = useState<{x:number;y:number}>({x: 100, y: 100});
+  const aiDragRef = useRef<{dragging:boolean;offsetX:number;offsetY:number}>({dragging:false, offsetX:0, offsetY:0});
   const [loading, setLoading] = useState(false);
   const [showAnalysis, setShowAnalysis] = useState(false);
   
@@ -65,6 +69,10 @@ export default function Read({
   const initialChapterIdRef = useRef<string | undefined>(initialChapterId);
   const initialScrollTopRef = useRef<number | undefined>(initialScrollTop);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const [showManageTooltip, setShowManageTooltip] = useState(false);
+  const [manageTooltipPos, setManageTooltipPos] = useState<{x:number;y:number}>({x:0,y:0});
+  const [manageHighlightId, setManageHighlightId] = useState<string | null>(null);
+  const suppressRestoreRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (storageManager) {
@@ -137,13 +145,14 @@ export default function Read({
 
       const containerRect = container.getBoundingClientRect();
 
-      // 为每个矩形区域创建高亮 div
+      // 为每个矩形区域创建与最终划线一致的“下划线”样式（2px线条）
       Array.from(rects).forEach((rect) => {
         const highlightDiv = document.createElement('div');
         highlightDiv.className = 'temp-highlight-item';
         highlightDiv.style.position = 'absolute';
-        highlightDiv.style.backgroundColor = 'rgba(59, 130, 246, 0.35)';
-        highlightDiv.style.borderRadius = '3px';
+        // 使用下划线效果：在文本矩形底部画2px高的横条
+        highlightDiv.style.backgroundColor = '#3b82f6';
+        highlightDiv.style.borderRadius = '1px';
         highlightDiv.style.pointerEvents = 'none';
         highlightDiv.style.zIndex = '10';
         
@@ -151,10 +160,12 @@ export default function Read({
         const top = rect.top - containerRect.top + container.scrollTop;
         const left = rect.left - containerRect.left + container.scrollLeft;
         
-        highlightDiv.style.top = `${top}px`;
+        // 将横条放在该行底部 (-2px 高度)
+        const underlineHeight = 2;
+        highlightDiv.style.top = `${top + rect.height - underlineHeight}px`;
         highlightDiv.style.left = `${left}px`;
         highlightDiv.style.width = `${rect.width}px`;
-        highlightDiv.style.height = `${rect.height}px`;
+        highlightDiv.style.height = `${underlineHeight}px`;
 
         overlay.appendChild(highlightDiv);
       });
@@ -198,16 +209,17 @@ export default function Read({
 
         const newContainerRect = container.getBoundingClientRect();
         const highlightItems = tempHighlightOverlayRef.current.querySelectorAll('.temp-highlight-item');
+        const underlineHeight = 2;
         
         Array.from(newRects).forEach((rect, index) => {
           const item = highlightItems[index] as HTMLElement;
           if (item) {
-            const top = rect.top - newContainerRect.top + container.scrollTop;
+            const top = rect.top - newContainerRect.top + container.scrollTop + rect.height - underlineHeight;
             const left = rect.left - newContainerRect.left + container.scrollLeft;
             item.style.top = `${top}px`;
             item.style.left = `${left}px`;
             item.style.width = `${rect.width}px`;
-            item.style.height = `${rect.height}px`;
+            item.style.height = `${underlineHeight}px`;
           }
         });
       };
@@ -227,6 +239,8 @@ export default function Read({
         container.removeEventListener('scroll', scrollHandler, true);
       };
 
+      // 立即确保覆盖层可见，避免闪烁
+      overlay.style.visibility = 'visible';
       console.log('✅ 创建临时高亮覆盖层，矩形数量:', rects.length);
     } catch (error) {
       console.error('❌ 创建临时高亮覆盖层失败:', error);
@@ -396,6 +410,9 @@ export default function Read({
 
   // 恢复划线的函数（提取出来，供多个地方使用）
   const restoreAllHighlights = useCallback(() => {
+    if (suppressRestoreRef.current) {
+      return;
+    }
     if (!chapterContent || !currentChapter || !contentRef.current || !highlightSystemRef.current) {
       return;
     }
@@ -597,6 +614,9 @@ export default function Read({
 
     // 使用 MutationObserver 监听 DOM 变化，一旦发现划线被清除就立即恢复
     const observer = new MutationObserver(() => {
+      if (suppressRestoreRef.current) {
+        return;
+      }
       // 检查是否有文本内容，确保 DOM 已渲染
       if (contentRef.current && contentRef.current.textContent && contentRef.current.textContent.trim().length > 0) {
         // 检查是否已有划线，如果数量不对就恢复
@@ -1265,7 +1285,7 @@ export default function Read({
             if (!testRange.collapsed && testRange.toString().trim().length > 0) {
               rangeToUse = testRange;
             }
-          } catch {}
+    } catch {/* ignore */}
         }
       }
       if (!rangeToUse) {
@@ -1296,12 +1316,12 @@ export default function Read({
       try {
         selection.removeAllRanges();
         selection.addRange(rangeToUse);
-      } catch {}
+          } catch {/* ignore */}
     }
 
     // 先创建划线
     const highlight = highlightSystemRef.current.createHighlight(
-      window.getSelection(),
+      window.getSelection() as Selection,
       contentRef.current || undefined,
       '#3b82f6'
     );
@@ -1407,11 +1427,29 @@ export default function Read({
     const data = selectedRangeDataRef.current;
     const selectedText = data?.text?.trim() || '';
     if (!selectedText) return;
+    // 先展示面板并显示“正在生成...”，立即可见
+    setShowAnalysis(true);
+    setAiStreamingText('正在生成...\n');
     setLoading(true);
     try {
       const analysis = await aiClient.analyzeContent(selectedText);
       setAiAnalysis(analysis);
-      setShowAnalysis(true);
+      // 流式展示
+      const parts: string[] = [];
+      if (analysis.summary) parts.push(`【摘要】\n${analysis.summary}\n\n`);
+      if (analysis.insights?.length) parts.push(`【洞察】\n- ${analysis.insights.join('\n- ')}\n\n`);
+      if (analysis.questions?.length) parts.push(`【启发式问题】\n- ${analysis.questions.join('\n- ')}\n\n`);
+      if (analysis.connections?.length) parts.push(`【知识关联】\n- ${analysis.connections.join('\n- ')}\n\n`);
+      const fullText = parts.join('');
+      setAiStreamingText(''); // 清空占位
+      let idx = 0;
+      const tick = () => {
+        const step = Math.max(1, Math.floor(fullText.length / 120));
+        setAiStreamingText((prev) => prev + fullText.slice(idx, idx + step));
+        idx += step;
+        if (idx < fullText.length) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
     } catch (e) {
       console.error('AI 启发失败:', e);
       alert('AI 启发失败，请检查后端与 API 配置');
@@ -1433,13 +1471,20 @@ export default function Read({
           clearTempHighlightOverlay();
         }
       }
+      if (showManageTooltip) {
+        const target = e.target as HTMLElement;
+        if (!target.closest('.highlight-manage-tooltip') && !target.closest('.epub-highlight')) {
+          setShowManageTooltip(false);
+          setManageHighlightId(null);
+        }
+      }
     };
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showHighlightTooltip, clearTempHighlightOverlay]);
+  }, [showHighlightTooltip, showManageTooltip, clearTempHighlightOverlay]);
 
   useEffect(() => {
     const container = contentRef.current;
@@ -1481,9 +1526,29 @@ export default function Read({
 
     setLoading(true);
     try {
+      // 启动面板并清空流式文本
+      setShowAnalysis(true);
+      setAiStreamingText('');
+      // 先请求完整结果，再以打字机方式流式呈现
       const analysis = await aiClient.analyzeContent(chapterContent);
       setAiAnalysis(analysis);
-      setShowAnalysis(true);
+      // 将摘要与关键信息拼接为流式文本
+      const parts: string[] = [];
+      if (analysis.summary) parts.push(`【摘要】\n${analysis.summary}\n\n`);
+      if (analysis.insights?.length) parts.push(`【洞察】\n- ${analysis.insights.join('\n- ')}\n\n`);
+      if (analysis.questions?.length) parts.push(`【启发式问题】\n- ${analysis.questions.join('\n- ')}\n\n`);
+      if (analysis.connections?.length) parts.push(`【知识关联】\n- ${analysis.connections.join('\n- ')}\n\n`);
+      const fullText = parts.join('');
+      let idx = 0;
+      const tick = () => {
+        const step = Math.max(1, Math.floor(fullText.length / 120));
+        setAiStreamingText((prev) => prev + fullText.slice(idx, idx + step));
+        idx += step;
+        if (idx < fullText.length) {
+          requestAnimationFrame(tick);
+        }
+      };
+      requestAnimationFrame(tick);
     } catch (error) {
       console.error('Failed to analyze content:', error);
       alert('AI 分析失败，请确保后端服务已启动（运行 npm run backend）');
@@ -1607,7 +1672,7 @@ export default function Read({
           <button onClick={() => handleExport('mindmap')}>导出思维导图</button>
         </div>
 
-        {highlights.length > 0 && (
+        {/* {highlights.length > 0 && (
           <div className="highlights-list">
             <h3>划线 ({highlights.length})</h3>
             <ul>
@@ -1647,7 +1712,7 @@ export default function Read({
               })}
             </ul>
           </div>
-        )}
+        )} */}
       </div>
 
       <div className="read-content">
@@ -1671,6 +1736,18 @@ export default function Read({
                 // 如果点击的是划线元素，检查内部是否有链接
                 let link: HTMLAnchorElement | null = null;
                 if (target.classList.contains('epub-highlight')) {
+                  // 打开管理 tooltip
+                  const hl = target.closest('.epub-highlight') as HTMLElement | null;
+                  const hid = hl?.getAttribute('data-highlight-id') || null;
+                  if (hid) {
+                    const mev = e as unknown as MouseEvent;
+                    const rect = (mev && typeof mev.clientX === 'number')
+                      ? { x: mev.clientX, y: mev.clientY }
+                      : { x: 0, y: 0 };
+                    setManageHighlightId(hid);
+                    setManageTooltipPos({ x: rect.x, y: rect.y });
+                    setShowManageTooltip(true);
+                  }
                   // 点击的是划线元素，查找内部的链接
                   link = target.querySelector('a') as HTMLAnchorElement;
                   if (!link) {
@@ -1760,6 +1837,160 @@ export default function Read({
               </div>
             )}
             
+            {/* 管理已存在划线的 tooltip */}
+            {showManageTooltip && manageHighlightId && (
+              <div
+                className="highlight-manage-tooltip"
+                style={{ left: `${manageTooltipPos.x}px`, top: `${manageTooltipPos.y}px` }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  className="highlight-button danger"
+                  onClick={async () => {
+                    if (!storageRef.current || !contentRef.current || !highlightSystemRef.current) return;
+                    const container = contentRef.current;
+                    const hs = highlightSystemRef.current;
+                    const toDeleteId = manageHighlightId;
+                    // 进入抑制恢复窗口
+                    suppressRestoreRef.current = true;
+                    // 先同步更新 React 状态，防止观察器用旧数据恢复
+                    flushSync(() => {
+                      setHighlights((prev) => prev.filter((h) => h.id !== toDeleteId));
+                    });
+                    // 持久化删除
+                    await storageRef.current.deleteHighlight(toDeleteId);
+                    // 删除内存
+                    hs.highlights.delete(toDeleteId);
+                    // 展开并移除所有该高亮的 span 片段（保留文本）
+                    const spans = container.querySelectorAll(`span.epub-highlight[data-highlight-id="${toDeleteId}"]`);
+                    spans.forEach((spanEl) => {
+                      const span = spanEl as HTMLElement;
+                      const parent = span.parentNode;
+                      if (!parent) return;
+                      while (span.firstChild) parent.insertBefore(span.firstChild, span);
+                      parent.removeChild(span);
+                    });
+                    // 移除关联的笔记块
+                    const noteBlocks = container.querySelectorAll(`.highlight-note-block[data-highlight-id="${toDeleteId}"]`);
+                    noteBlocks.forEach((n) => n.parentElement?.removeChild(n));
+                    // 强制刷新当前章节的渲染（清空再按当前内存重绘，确保立即消失）
+                    hs.renderHighlights(container, true);
+                    hs.renderAllNotes(container);
+                    // 同步虚拟渲染器
+                    if (virtualRendererRef.current && currentChapter) {
+                      const remaining = Array.from(hs.highlights.values()).filter((h) => (h as StoredHighlight).chapterId === currentChapter.id);
+                      virtualRendererRef.current.setHighlights(remaining as Highlight[]);
+                    }
+                    // 关闭管理浮层
+                    setShowManageTooltip(false);
+                    setManageHighlightId(null);
+                    // 读强制回流，确保浏览器立即应用渲染
+                    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+                    container.offsetHeight;
+                    // 退出抑制窗口
+                    suppressRestoreRef.current = false;
+                  }}
+                >
+                  删除划线
+                </button>
+                <button
+                  className="highlight-button"
+                  onClick={async () => {
+                    if (!highlightSystemRef.current || !contentRef.current || !manageHighlightId) return;
+                    const text = window.prompt('输入新增笔记内容：', '');
+                    if (text === null) return;
+                    const h = highlightSystemRef.current.highlights.get(manageHighlightId);
+                    if (!h) return;
+                    const now = Date.now();
+                    const newNote = { id: `note-${now}-${Math.random().toString(36).slice(2,6)}`, content: text.trim(), createdAt: now, updatedAt: now };
+                    const updated: StoredHighlight = { ...(h as StoredHighlight), notes: [...(h.notes || []), newNote] };
+                    highlightSystemRef.current.highlights.set(manageHighlightId, updated);
+                    highlightSystemRef.current.insertNoteAfterHighlight(manageHighlightId, contentRef.current);
+                    if (storageRef.current) {
+                      await storageRef.current.saveHighlight(updated);
+                    }
+                    setHighlights((prev) => {
+                      const idx = prev.findIndex((x) => x.id === manageHighlightId);
+                      if (idx === -1) return prev;
+                      const next = [...prev];
+                      next[idx] = updated;
+                      return next;
+                    });
+                    setShowManageTooltip(false);
+                    setManageHighlightId(null);
+                  }}
+                >
+                  新增笔记
+                </button>
+                <button
+                  className="highlight-button"
+                  onClick={async () => {
+                    if (!highlightSystemRef.current || !contentRef.current || !manageHighlightId) return;
+                    const h = highlightSystemRef.current.highlights.get(manageHighlightId);
+                    if (!h || !h.notes || h.notes.length === 0) {
+                      alert('该划线暂无笔记');
+                      return;
+                    }
+                    const summary = h.notes.map((n, i) => `${i + 1}. ${n.content}`).join('\n');
+                    const input = window.prompt(`输入要修改/删除的笔记序号（1~${h.notes.length}），前缀 d 表示删除，例如 d2；直接输入新内容则为修改：\n${summary}`, '');
+                    if (input === null) return;
+                    const trimmed = input.trim();
+                    let index = -1;
+                    let mode: 'delete' | 'edit' = 'edit';
+                    if (/^d\d+$/i.test(trimmed)) {
+                      mode = 'delete';
+                      index = parseInt(trimmed.slice(1), 10) - 1;
+                    } else if (/^\d+$/.test(trimmed)) {
+                      index = parseInt(trimmed, 10) - 1;
+                    } else {
+                      alert('输入格式不正确');
+                      return;
+                    }
+                    if (index < 0 || index >= h.notes.length) {
+                      alert('序号超出范围');
+                      return;
+                    }
+                    const updated: StoredHighlight = { ...(h as StoredHighlight) };
+                    if (mode === 'delete') {
+                      updated.notes = [...h.notes.slice(0, index), ...h.notes.slice(index + 1)];
+                    } else {
+                      const newContent = window.prompt('输入新的笔记内容：', h.notes[index].content) || h.notes[index].content;
+                      updated.notes = [...h.notes];
+                      updated.notes[index] = { ...h.notes[index], content: newContent, updatedAt: Date.now() };
+                    }
+                    highlightSystemRef.current.highlights.set(manageHighlightId, updated);
+                    // 重新插入笔记（先清除、再插入）
+                    const oldNoteEls = contentRef.current.querySelectorAll(`.highlight-note-block[data-highlight-id="${manageHighlightId}"]`);
+                    oldNoteEls.forEach(el => el.parentElement?.removeChild(el));
+                    highlightSystemRef.current.insertNoteAfterHighlight(manageHighlightId, contentRef.current);
+                    if (storageRef.current) {
+                      await storageRef.current.saveHighlight(updated);
+                    }
+                    setHighlights((prev) => {
+                      const idx = prev.findIndex((x) => x.id === manageHighlightId);
+                      if (idx === -1) return prev;
+                      const next = [...prev];
+                      next[idx] = updated;
+                      return next;
+                    });
+                    setShowManageTooltip(false);
+                    setManageHighlightId(null);
+                  }}
+                >
+                  管理笔记
+                </button>
+                <button
+                  className="highlight-button"
+                  onClick={() => {
+                    setShowManageTooltip(false);
+                    setManageHighlightId(null);
+                  }}
+                >
+                  关闭
+                </button>
+              </div>
+            )}
+            
             {/* 翻页按钮 */}
             <div className="chapter-navigation">
               <button
@@ -1792,38 +2023,82 @@ export default function Read({
           </>
         )}
 
-        {showAnalysis && aiAnalysis && (
-          <div className="ai-analysis">
-            <h2>AI 分析</h2>
-            <div className="analysis-section">
-              <h3>摘要</h3>
-              <p>{aiAnalysis.summary}</p>
+        {showAnalysis && (
+          <div
+            className="ai-analysis-draggable"
+            style={{ left: `${aiPanelPos.x}px`, top: `${aiPanelPos.y}px` }}
+            onMouseDown={(e) => {
+              const target = e.target as HTMLElement;
+              if (target.classList.contains('ai-drag-handle')) {
+                aiDragRef.current.dragging = true;
+                aiDragRef.current.offsetX = e.clientX - aiPanelPos.x;
+                aiDragRef.current.offsetY = e.clientY - aiPanelPos.y;
+                e.preventDefault();
+              }
+            }}
+            onMouseMove={(e) => {
+              if (aiDragRef.current.dragging) {
+                setAiPanelPos({
+                  x: e.clientX - aiDragRef.current.offsetX,
+                  y: e.clientY - aiDragRef.current.offsetY,
+                });
+              }
+            }}
+            onMouseUp={() => {
+              aiDragRef.current.dragging = false;
+            }}
+            onMouseLeave={() => {
+              aiDragRef.current.dragging = false;
+            }}
+          >
+            <div className="ai-panel-header ai-drag-handle">
+              <div className="ai-title">AI 分析</div>
+              <button
+                className="ai-close"
+                onClick={() => setShowAnalysis(false)}
+                title="关闭"
+              >
+                ×
+              </button>
             </div>
-            <div className="analysis-section">
-              <h3>洞察</h3>
-              <ul>
-                {aiAnalysis.insights.map((insight, index) => (
-                  <li key={index}>{insight}</li>
-                ))}
-              </ul>
+            <div className="ai-panel-body">
+              {aiStreamingText ? (
+                <pre className="ai-stream">{aiStreamingText}</pre>
+              ) : aiAnalysis ? (
+                <>
+                  <div className="analysis-section">
+                    <h3>摘要</h3>
+                    <p>{aiAnalysis.summary}</p>
+                  </div>
+                  <div className="analysis-section">
+                    <h3>洞察</h3>
+                    <ul>
+                      {aiAnalysis.insights.map((insight, index) => (
+                        <li key={index}>{insight}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="analysis-section">
+                    <h3>启发式问题</h3>
+                    <ul>
+                      {aiAnalysis.questions.map((question, index) => (
+                        <li key={index}>{question}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="analysis-section">
+                    <h3>知识关联</h3>
+                    <ul>
+                      {aiAnalysis.connections.map((connection, index) => (
+                        <li key={index}>{connection}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </>
+              ) : (
+                <div className="analysis-loading">分析生成中...</div>
+              )}
             </div>
-            <div className="analysis-section">
-              <h3>启发式问题</h3>
-              <ul>
-                {aiAnalysis.questions.map((question, index) => (
-                  <li key={index}>{question}</li>
-                ))}
-              </ul>
-            </div>
-            <div className="analysis-section">
-              <h3>知识关联</h3>
-              <ul>
-                {aiAnalysis.connections.map((connection, index) => (
-                  <li key={index}>{connection}</li>
-                ))}
-              </ul>
-            </div>
-            <button onClick={() => setShowAnalysis(false)}>关闭</button>
           </div>
         )}
       </div>

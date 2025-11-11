@@ -132,11 +132,33 @@ function App() {
       try {
         setError(null);
         const manager = await ensureStorage();
+        const incomingTitle = selectedFile.name.replace(/\.epub$/i, "") || "未命名书籍";
+        const existed = (await manager.getAllBooks()).find(
+          (b) => (b.title || "").trim() === incomingTitle.trim()
+        );
+        if (existed) {
+          const ok = window.confirm(`图书馆中已存在《${incomingTitle}》，是否直接打开？`);
+          if (ok) {
+            const record = await manager.getBookFile(existed.id);
+            if (!record) {
+              setError("已存在记录但缺少文件，请重新导入该书籍。");
+              return;
+            }
+            const restoredFile = new File([record.file], record.fileName, { type: record.mimeType });
+            setActiveBook(existed);
+            setBookId(existed.id);
+            setFile(restoredFile);
+            setInitialChapterId(existed.currentChapterId);
+            setInitialScrollTop(existed.scrollTop);
+            setView("reader");
+            return;
+          }
+        }
         const id = `book-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const now = Date.now();
         const metadata: BookMetadata = {
           id,
-          title: selectedFile.name.replace(/\.epub$/i, "") || "未命名书籍",
+          title: incomingTitle,
           author: "未知作者",
           filePath: selectedFile.name,
           progress: 0,
@@ -171,13 +193,35 @@ function App() {
       try {
         setError(null);
         const manager = await ensureStorage();
+        // 重复校验
+        const fileName = url.split("/").pop()?.replace(/\?.*$/, "") || `online-${Date.now()}.epub`;
+        const incomingTitle = fileName.replace(/\.epub$/i, "") || "在线书籍";
+        const existed = (await manager.getAllBooks()).find(
+          (b) => (b.title || "").trim() === incomingTitle.trim()
+        );
+        if (existed) {
+          const ok = window.confirm(`图书馆中已存在《${incomingTitle}》，是否直接打开？`);
+          if (ok) {
+            const record = await manager.getBookFile(existed.id);
+            if (!record) {
+              setError("已存在记录但缺少文件，请重新导入该书籍。");
+              return;
+            }
+            const restoredFile = new File([record.file], record.fileName, { type: record.mimeType });
+            setActiveBook(existed);
+            setBookId(existed.id);
+            setFile(restoredFile);
+            setInitialChapterId(existed.currentChapterId);
+            setInitialScrollTop(existed.scrollTop);
+            setView("reader");
+            return;
+          }
+        }
         const response = await fetch(url);
         if (!response.ok) {
           throw new Error(`无法下载在线 EPUB：${response.status}`);
         }
         const blob = await response.blob();
-        const fileName =
-          url.split("/").pop()?.replace(/\?.*$/, "") || `online-${Date.now()}.epub`;
         const file = new File([blob], fileName, {
           type: blob.type || "application/epub+zip",
         });
@@ -186,7 +230,7 @@ function App() {
         const now = Date.now();
         const metadata: BookMetadata = {
           id,
-          title: fileName.replace(/\.epub$/i, "") || "在线书籍",
+          title: incomingTitle,
           author: "未知作者",
           filePath: url,
           progress: 0,
