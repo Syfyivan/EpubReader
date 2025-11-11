@@ -1,7 +1,67 @@
-.read-container {
+.read-shell {
   display: flex;
+  flex-direction: column;
   min-height: 100vh;
   background: var(--bg-secondary);
+}
+
+.read-container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.read-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 1rem 1.75rem;
+  min-height: 72px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(236, 72, 153, 0.18));
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(99, 102, 241, 0.25);
+  box-shadow: 0 6px 24px -12px rgba(99, 102, 241, 0.6);
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.topbar-back {
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-md);
+  border: none;
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--primary-color);
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: var(--transition);
+}
+
+.topbar-back:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+.topbar-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.topbar-meta {
+  display: flex;
+  gap: 1.25rem;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
 }
 
 /* 确保文本选择高亮显示 */
@@ -32,8 +92,8 @@
   overflow: hidden;
   box-shadow: var(--shadow-lg);
   position: sticky;
-  top: 0;
-  height: 100vh;
+  top: 72px;
+  height: calc(100vh - 72px);
 }
 
 .read-sidebar h2 {
@@ -64,7 +124,7 @@
   flex: 1;
 }
 
-.chapter-list li {
+.chapter-item {
   padding: 1rem 1.5rem;
   cursor: pointer;
   transition: var(--transition);
@@ -75,7 +135,7 @@
   overflow: hidden;
 }
 
-.chapter-list li::before {
+.chapter-item::before {
   content: '';
   position: absolute;
   left: 0;
@@ -87,21 +147,42 @@
   z-index: 0;
 }
 
-.chapter-list li:hover::before {
+.chapter-item:hover::before {
   width: 100%;
 }
 
-.chapter-list li:hover {
+.chapter-item:hover {
   background: var(--bg-secondary);
   border-left-color: var(--primary-light);
   color: var(--text-primary);
 }
 
-.chapter-list li.active {
+.chapter-item.active {
   background: linear-gradient(90deg, rgba(99, 102, 241, 0.15) 0%, transparent 100%);
   border-left-color: var(--primary-color);
   color: var(--primary-color);
   font-weight: 600;
+}
+
+.chapter-item.chapter-level-0 {
+  padding-left: 1.5rem;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.chapter-item.chapter-level-1 {
+  padding-left: 2.5rem;
+  font-size: 0.95rem;
+}
+
+.chapter-item.chapter-level-2 {
+  padding-left: 3.5rem;
+  font-size: 0.9rem;
+}
+
+.chapter-item.chapter-level-3 {
+  padding-left: 4.5rem;
+  font-size: 0.9rem;
 }
 
 /* 侧边栏操作按钮 */
@@ -168,7 +249,7 @@
   margin: 0;
 }
 
-.highlights-list li {
+.highlight-item {
   padding: 0.875rem;
   margin-bottom: 0.75rem;
   background: var(--bg-primary);
@@ -178,9 +259,13 @@
   transition: var(--transition);
 }
 
-.highlights-list li:hover {
+.highlight-item:hover {
   box-shadow: var(--shadow-md);
   transform: translateX(4px);
+}
+
+.highlight-item.clickable {
+  cursor: pointer;
 }
 
 .highlight-text {
@@ -198,6 +283,12 @@
   border-top: 1px solid var(--border-color);
 }
 
+.highlight-tooltip {
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 1000;
+}
+
 /* 主内容区 */
 .read-content {
   flex: 1;
@@ -206,7 +297,7 @@
   padding: 3rem 2rem;
   background: var(--bg-primary);
   position: relative; /* 为提示框提供定位上下文 */
-  min-height: 100vh;
+  min-height: calc(100vh - 72px);
   box-shadow: var(--shadow-lg);
 }
 
@@ -392,7 +483,7 @@
 
 .epub-highlight.underline:hover {
   text-decoration-thickness: 3px !important;
-  background-color: rgba(59, 130, 246, 0.1);
+  background-color: rgba(117, 152, 95, 0.1);
   border-radius: 2px;
 }
 

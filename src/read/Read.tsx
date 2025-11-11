@@ -6,15 +6,29 @@ import { EpubParser } from '../parse/parse';
 import { HighlightSystem } from '../highlight/HighlightSystem';
 import { VirtualHighlightRenderer, createVirtualScrollObserver } from '../highlight/VirtualHighlightRenderer';
 import { StorageManager } from '../storage/StorageManager';
+import type { BookMetadata } from '../storage/StorageManager';
 import { aiClient, type AIAnalysis } from '../api/aiClient';
 import './Read.css';
 
 interface ReadProps {
   file: File | string;
   bookId: string;
+  storageManager?: StorageManager;
+  onExit?: () => void;
+  onMetadataChange?: (bookId: string) => void;
+  initialChapterId?: string;
+  initialScrollTop?: number;
 }
 
-export default function Read({ file, bookId }: ReadProps) {
+export default function Read({
+  file,
+  bookId,
+  storageManager,
+  onExit,
+  onMetadataChange,
+  initialChapterId,
+  initialScrollTop,
+}: ReadProps) {
   const [parser, setParser] = useState<EpubParser | null>(null);
   const [chapters, setChapters] = useState<EpubChapter[]>([]);
   const [currentChapter, setCurrentChapter] = useState<EpubChapter | null>(null);
@@ -22,6 +36,7 @@ export default function Read({ file, bookId }: ReadProps) {
   const [chapterRenderKey, setChapterRenderKey] = useState<number>(0); // 强制重新渲染的key
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [highlightChapterMap, setHighlightChapterMap] = useState<Map<string, string>>(new Map()); // 存储 highlightId -> chapterId 的映射
+  const [bookMetadata, setBookMetadata] = useState<BookMetadata | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [showAnalysis, setShowAnalysis] = useState(false);
@@ -34,14 +49,189 @@ export default function Read({ file, bookId }: ReadProps) {
   interface RangeData {
     range: Range;
     position: HighlightPosition;
+    text: string; // 保存文本，用于恢复
   }
   const selectedRangeDataRef = useRef<RangeData | null>(null);
+
+  // 临时高亮覆盖层（使用绝对定位，不修改DOM结构）
+  const tempHighlightOverlayRef = useRef<HTMLDivElement | null>(null);
+  const tempHighlightRangeRef = useRef<Range | null>(null);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const highlightSystemRef = useRef<HighlightSystem | null>(null);
   const virtualRendererRef = useRef<VirtualHighlightRenderer | null>(null);
-  const storageRef = useRef<StorageManager | null>(null);
+  const storageRef = useRef<StorageManager | null>(storageManager ?? null);
   const scrollObserverCleanupRef = useRef<(() => void) | null>(null);
+  const initialChapterIdRef = useRef<string | undefined>(initialChapterId);
+  const initialScrollTopRef = useRef<number | undefined>(initialScrollTop);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (storageManager) {
+      storageRef.current = storageManager;
+    }
+  }, [storageManager]);
+
+  useEffect(() => {
+    initialChapterIdRef.current = initialChapterId;
+  }, [bookId, initialChapterId]);
+
+  useEffect(() => {
+    initialScrollTopRef.current = initialScrollTop;
+  }, [bookId, initialScrollTop]);
+
+  // 清除临时高亮覆盖层
+  const clearTempHighlightOverlay = useCallback(() => {
+    if (tempHighlightOverlayRef.current) {
+      // 清理事件监听器
+      const overlay = tempHighlightOverlayRef.current as HTMLElement & { _cleanup?: () => void };
+      if (overlay._cleanup && typeof overlay._cleanup === 'function') {
+        overlay._cleanup();
+      }
+      tempHighlightOverlayRef.current.remove();
+      tempHighlightOverlayRef.current = null;
+    }
+    tempHighlightRangeRef.current = null;
+  }, []);
+
+  // 创建临时高亮覆盖层（使用绝对定位，不修改DOM结构）
+  const createTempHighlightOverlay = useCallback((range: Range) => {
+    // 先清除之前的覆盖层
+    clearTempHighlightOverlay();
+
+    try {
+      // 验证 range 是否仍然有效
+      if (!range || range.collapsed) {
+        console.warn('⚠️ createTempHighlightOverlay: Range 无效或已折叠');
+        return;
+      }
+
+      // 先保存 range 的克隆，用于滚动时更新位置（在获取 rects 之前保存，避免 range 失效）
+      tempHighlightRangeRef.current = range.cloneRange();
+
+      // 获取 range 的所有矩形区域（可能跨多行）
+      const rects = range.getClientRects();
+      if (rects.length === 0) {
+        console.warn('⚠️ createTempHighlightOverlay: 无法获取 range 的矩形区域');
+        return;
+      }
+
+      const rangeText = range.toString().substring(0, 30);
+      console.log('🎨 创建临时高亮，矩形数量:', rects.length, 'range文本:', rangeText);
+
+      // 创建覆盖层容器
+      const overlay = document.createElement('div');
+      overlay.className = 'temp-highlight-overlay';
+      overlay.style.position = 'absolute';
+      overlay.style.pointerEvents = 'none'; // 不阻止点击
+      overlay.style.zIndex = '10'; // 确保在文本上方，但在 tooltip (z-index: 1000) 下方
+      overlay.style.top = '0';
+      overlay.style.left = '0';
+      overlay.style.width = '100%';
+      overlay.style.height = '100%';
+      overlay.style.overflow = 'visible'; // 确保内容可见
+
+      // 获取容器的位置
+      const container = contentRef.current;
+      if (!container) return;
+
+      const containerRect = container.getBoundingClientRect();
+
+      // 为每个矩形区域创建高亮 div
+      Array.from(rects).forEach((rect) => {
+        const highlightDiv = document.createElement('div');
+        highlightDiv.className = 'temp-highlight-item';
+        highlightDiv.style.position = 'absolute';
+        highlightDiv.style.backgroundColor = 'rgba(59, 130, 246, 0.35)';
+        highlightDiv.style.borderRadius = '3px';
+        highlightDiv.style.pointerEvents = 'none';
+        highlightDiv.style.zIndex = '10';
+        
+        // 计算相对于容器的位置
+        const top = rect.top - containerRect.top + container.scrollTop;
+        const left = rect.left - containerRect.left + container.scrollLeft;
+        
+        highlightDiv.style.top = `${top}px`;
+        highlightDiv.style.left = `${left}px`;
+        highlightDiv.style.width = `${rect.width}px`;
+        highlightDiv.style.height = `${rect.height}px`;
+
+        overlay.appendChild(highlightDiv);
+      });
+
+      // 将覆盖层添加到容器
+      if (container.style.position !== 'relative' && container.style.position !== 'absolute' && container.style.position !== 'fixed') {
+        container.style.position = 'relative'; // 确保容器是定位上下文
+      }
+      container.appendChild(overlay);
+      tempHighlightOverlayRef.current = overlay;
+
+      // 验证覆盖层是否成功添加到 DOM
+      if (document.contains(overlay)) {
+        console.log('✅ 临时高亮覆盖层已成功添加到 DOM');
+      } else {
+        console.error('❌ 临时高亮覆盖层未成功添加到 DOM');
+      }
+
+      // 监听滚动和窗口大小变化，更新位置
+      const updatePosition = () => {
+        if (!tempHighlightOverlayRef.current || !container) return;
+        
+        // 尝试使用保存的 range 获取新的位置
+        let newRects: DOMRectList | DOMRect[] = [];
+        try {
+          // 检查 range 是否仍然有效
+          const savedRange = tempHighlightRangeRef.current;
+          if (savedRange && !savedRange.collapsed) {
+            newRects = savedRange.getClientRects();
+          }
+        } catch {
+          // range 可能已失效，清除覆盖层
+          clearTempHighlightOverlay();
+          return;
+        }
+        
+        if (newRects.length === 0) {
+          clearTempHighlightOverlay();
+          return;
+        }
+
+        const newContainerRect = container.getBoundingClientRect();
+        const highlightItems = tempHighlightOverlayRef.current.querySelectorAll('.temp-highlight-item');
+        
+        Array.from(newRects).forEach((rect, index) => {
+          const item = highlightItems[index] as HTMLElement;
+          if (item) {
+            const top = rect.top - newContainerRect.top + container.scrollTop;
+            const left = rect.left - newContainerRect.left + container.scrollLeft;
+            item.style.top = `${top}px`;
+            item.style.left = `${left}px`;
+            item.style.width = `${rect.width}px`;
+            item.style.height = `${rect.height}px`;
+          }
+        });
+      };
+
+      // 添加滚动监听
+      const scrollHandler = () => updatePosition();
+      const resizeHandler = () => updatePosition();
+      
+      window.addEventListener('scroll', scrollHandler, true);
+      window.addEventListener('resize', resizeHandler);
+      container.addEventListener('scroll', scrollHandler, true);
+
+      // 保存清理函数
+      (overlay as HTMLElement & { _cleanup?: () => void })._cleanup = () => {
+        window.removeEventListener('scroll', scrollHandler, true);
+        window.removeEventListener('resize', resizeHandler);
+        container.removeEventListener('scroll', scrollHandler, true);
+      };
+
+      console.log('✅ 创建临时高亮覆盖层，矩形数量:', rects.length);
+    } catch (error) {
+      console.error('❌ 创建临时高亮覆盖层失败:', error);
+    }
+  }, [clearTempHighlightOverlay]);
 
   const loadChapter = useCallback(async (chapterId: string, epubParser?: EpubParser) => {
     const parserToUse = epubParser || parser;
@@ -51,6 +241,12 @@ export default function Read({ file, bookId }: ReadProps) {
     }
 
     console.log('🔄 Loading chapter:', chapterId);
+    
+    // 清除临时高亮和选中状态
+    clearTempHighlightOverlay();
+    setShowHighlightTooltip(false);
+    selectedRangeDataRef.current = null;
+    
     setLoading(true);
 
     try {
@@ -72,6 +268,19 @@ export default function Read({ file, bookId }: ReadProps) {
       setChapterRenderKey(prev => prev + 1); // 强制重新渲染
       // 注意：不再使用 restoredChapterRef，因为每次 highlights 更新都会自动恢复
       console.log('✅ Chapter and content set in state, renderKey:', chapterRenderKey + 1);
+
+      if (storageRef.current) {
+        const percent = parserToUse.getProgress(chapterId);
+        const updated = await storageRef.current.updateBookMetadata(bookId, {
+          currentChapterId: chapterId,
+          progress: Number.isFinite(percent) ? percent / 100 : 0,
+          lastReadAt: Date.now(),
+        });
+        if (updated) {
+          setBookMetadata(updated);
+          onMetadataChange?.(bookId);
+        }
+      }
 
       // 恢复划线的辅助函数
       const restoreHighlightsForChapter = (chId: string) => {
@@ -162,6 +371,14 @@ export default function Read({ file, bookId }: ReadProps) {
             }
 
             restoreHighlightsForChapter(chapterId);
+
+            if (
+              initialScrollTopRef.current !== undefined &&
+              contentRef.current
+            ) {
+              contentRef.current.scrollTop = initialScrollTopRef.current;
+              initialScrollTopRef.current = undefined;
+            }
           }
         }, 150);
       }, 100);
@@ -175,7 +392,7 @@ export default function Read({ file, bookId }: ReadProps) {
         console.log('Loading set to false');
       }, 50);
     }
-  }, [parser, chapterRenderKey]);
+  }, [parser, chapterRenderKey, clearTempHighlightOverlay, bookId, onMetadataChange]);
 
   // 恢复划线的函数（提取出来，供多个地方使用）
   const restoreAllHighlights = useCallback(() => {
@@ -303,8 +520,63 @@ export default function Read({ file, bookId }: ReadProps) {
       if (existingHighlights.length < chapterHighlights.length) {
         restoreAllHighlights();
       }
+      
+      // 检查临时高亮是否被清除，如果是则恢复
+      // 延迟检查，等待 DOM 完全稳定
+      if (selectedRangeDataRef.current && tempHighlightRangeRef.current) {
+        const overlayExists = tempHighlightOverlayRef.current && 
+                              document.contains(tempHighlightOverlayRef.current) &&
+                              contentRef.current.contains(tempHighlightOverlayRef.current);
+        
+        if (!overlayExists) {
+          console.log('🔄 useLayoutEffect: 检测到临时高亮被清除，尝试恢复...');
+          // 延迟恢复，确保 DOM 完全稳定
+          setTimeout(() => {
+            if (!selectedRangeDataRef.current || !contentRef.current || !highlightSystemRef.current) return;
+            
+            try {
+              const rangeData = selectedRangeDataRef.current;
+              
+              // 优先使用 position 恢复 range（更可靠，因为 DOM 可能已改变）
+              let restoredRange: Range | null = null;
+              if (rangeData.position) {
+                highlightSystemRef.current.setContainer(contentRef.current);
+                restoredRange = highlightSystemRef.current.restoreRange(
+                  rangeData.position,
+                  contentRef.current,
+                  rangeData.text
+                );
+              }
+              
+              // 如果 position 恢复失败，尝试使用保存的 range
+              if (!restoredRange && tempHighlightRangeRef.current) {
+                const savedRange = tempHighlightRangeRef.current;
+                try {
+                  if (!savedRange.collapsed) {
+                    const testRects = savedRange.getClientRects();
+                    if (testRects.length > 0) {
+                      restoredRange = savedRange;
+                    }
+                  }
+                } catch {
+                  // range 已失效
+                }
+              }
+              
+              if (restoredRange && !restoredRange.collapsed) {
+                console.log('✅ useLayoutEffect: 临时高亮 range 恢复成功，重新创建覆盖层');
+                createTempHighlightOverlay(restoredRange);
+              } else {
+                console.warn('⚠️ useLayoutEffect: 临时高亮 range 已失效，无法恢复');
+              }
+            } catch (e) {
+              console.warn('⚠️ useLayoutEffect: 恢复临时高亮失败:', e);
+            }
+          }, 150);
+        }
+      }
     }
-  }, [chapterContent, currentChapter, restoreAllHighlights, highlights]);
+  }, [chapterContent, currentChapter, restoreAllHighlights, highlights, createTempHighlightOverlay]);
 
   // 使用 useEffect 作为备用方案（处理异步情况）
   // 监听 DOM 变化，一旦发现划线被清除就立即恢复
@@ -334,6 +606,60 @@ export default function Read({ file, bookId }: ReadProps) {
         if (existingHighlights.length < chapterHighlights.length) {
           console.log(`⚠️ 检测到划线被清除，当前 ${existingHighlights.length} 个，应该 ${chapterHighlights.length} 个，立即恢复`);
           restoreAllHighlights();
+        }
+        
+        // 检查临时高亮是否被清除，如果是则恢复
+        if (selectedRangeDataRef.current && tempHighlightRangeRef.current) {
+          const overlayExists = tempHighlightOverlayRef.current && 
+                                document.contains(tempHighlightOverlayRef.current) &&
+                                contentRef.current.contains(tempHighlightOverlayRef.current);
+          
+          if (!overlayExists) {
+            console.log('🔄 MutationObserver: 检测到临时高亮被清除，尝试恢复...');
+            // 延迟恢复，确保 DOM 完全稳定
+            setTimeout(() => {
+              if (!selectedRangeDataRef.current || !contentRef.current || !highlightSystemRef.current) return;
+              
+              try {
+                const rangeData = selectedRangeDataRef.current;
+                
+                // 优先使用 position 恢复 range（更可靠，因为 DOM 可能已改变）
+                let restoredRange: Range | null = null;
+                if (rangeData.position) {
+                  highlightSystemRef.current.setContainer(contentRef.current);
+                  restoredRange = highlightSystemRef.current.restoreRange(
+                    rangeData.position,
+                    contentRef.current,
+                    rangeData.text
+                  );
+                }
+                
+                // 如果 position 恢复失败，尝试使用保存的 range
+                if (!restoredRange && tempHighlightRangeRef.current) {
+                  const savedRange = tempHighlightRangeRef.current;
+                  try {
+                    if (!savedRange.collapsed) {
+                      const testRects = savedRange.getClientRects();
+                      if (testRects.length > 0) {
+                        restoredRange = savedRange;
+                      }
+                    }
+                  } catch {
+                    // range 已失效
+                  }
+                }
+                
+                if (restoredRange && !restoredRange.collapsed) {
+                  console.log('✅ MutationObserver: 临时高亮 range 恢复成功，重新创建覆盖层');
+                  createTempHighlightOverlay(restoredRange);
+                } else {
+                  console.warn('⚠️ MutationObserver: 临时高亮 range 已失效，无法恢复');
+                }
+              } catch (e) {
+                console.warn('⚠️ MutationObserver: 恢复临时高亮失败:', e);
+              }
+            }, 150);
+          }
         }
       }
     });
@@ -365,7 +691,7 @@ export default function Read({ file, bookId }: ReadProps) {
       observer.disconnect();
       clearTimeout(checkTimer);
     };
-  }, [chapterContent, currentChapter, restoreAllHighlights, highlights]);
+  }, [chapterContent, currentChapter, restoreAllHighlights, highlights, createTempHighlightOverlay]);
 
   // 翻页功能
   const goToPreviousChapter = useCallback(() => {
@@ -417,9 +743,28 @@ export default function Read({ file, bookId }: ReadProps) {
       setLoading(true);
       try {
         // 初始化存储管理器
-        const storage = new StorageManager();
-        await storage.init();
-        storageRef.current = storage;
+        let storage = storageRef.current;
+        if (!storage) {
+          storage = new StorageManager();
+          await storage.init();
+          storageRef.current = storage;
+        } else {
+          await storage.init();
+        }
+
+        const meta = await storage.getBook(bookId);
+        if (meta) {
+          setBookMetadata(meta);
+          if (!initialChapterIdRef.current && meta.currentChapterId) {
+            initialChapterIdRef.current = meta.currentChapterId;
+          }
+          if (
+            initialScrollTopRef.current === undefined &&
+            typeof meta.scrollTop === "number"
+          ) {
+            initialScrollTopRef.current = meta.scrollTop;
+          }
+        }
 
         // 初始化划线系统
         const highlightSystem = new HighlightSystem();
@@ -443,6 +788,27 @@ export default function Read({ file, bookId }: ReadProps) {
         await epubParser.load(file);
         setParser(epubParser);
 
+        const epubMeta = epubParser.getMetadata();
+        if (storageRef.current) {
+          const updates: Partial<BookMetadata> = {};
+          if (epubMeta.title && epubMeta.title !== meta?.title) {
+            updates.title = epubMeta.title;
+          }
+          if (epubMeta.author && epubMeta.author !== meta?.author) {
+            updates.author = epubMeta.author;
+          }
+          if (Object.keys(updates).length > 0) {
+            const updated = await storageRef.current.updateBookMetadata(
+              bookId,
+              updates
+            );
+            if (updated) {
+              setBookMetadata(updated);
+              onMetadataChange?.(bookId);
+            }
+          }
+        }
+
         const chapters = epubParser.getChapters();
         console.log('📚 Chapters loaded:', chapters.map(ch => `${ch.id}: ${ch.title}`));
 
@@ -456,7 +822,17 @@ export default function Read({ file, bookId }: ReadProps) {
         setChapters(chapters);
 
         if (chapters.length > 0) {
-          await loadChapter(chapters[0].id, epubParser);
+          let targetChapterId = chapters[0].id;
+          if (initialChapterIdRef.current) {
+            const exists = chapters.find(
+              (chapter) => chapter.id === initialChapterIdRef.current
+            );
+            if (exists) {
+              targetChapterId = initialChapterIdRef.current;
+            }
+          }
+          await loadChapter(targetChapterId, epubParser);
+          initialChapterIdRef.current = undefined;
         }
 
         // 加载已保存的划线
@@ -593,11 +969,12 @@ export default function Read({ file, bookId }: ReadProps) {
         return;
       }
 
-      // 保存序列化的 position 和原始的 range（作为备份）
-      // 使用一个对象同时保存两者
+      // 保存序列化的 position、原始的 range 和文本（作为备份）
+      // 使用一个对象同时保存三者
       const rangeData: RangeData = {
         range: range.cloneRange(),
         position: position,
+        text: text, // 保存文本，用于恢复
       };
       
       // 使用 ref 保存，避免 React 状态更新导致的问题
@@ -643,15 +1020,29 @@ export default function Read({ file, bookId }: ReadProps) {
       });
 
       setShowHighlightTooltip(true);
+      
+      // 创建临时高亮覆盖层（不修改DOM，使用绝对定位）
+      // 先创建临时高亮，然后再清除浏览器默认选择
+      // 立即创建，不等待动画帧，确保在章节重新渲染前创建
+      createTempHighlightOverlay(range);
+      
+      // 延迟清除浏览器选择，确保临时高亮已经完全创建并渲染
+      setTimeout(() => {
+        window.getSelection()?.removeAllRanges();
+        console.log('🧹 已清除浏览器选择，临时高亮应该已显示');
+      }, 50);
     } catch (error) {
       console.error('❌ 保存选中范围时出错:', error);
       setShowHighlightTooltip(false);
       selectedRangeDataRef.current = null;
     }
-  }, []);
+  }, [createTempHighlightOverlay]);
 
   // 创建划线
   const handleCreateHighlight = useCallback(() => {
+    // 先清除临时高亮覆盖层
+    clearTempHighlightOverlay();
+    
     if (!selectedRangeDataRef.current || !highlightSystemRef.current || !storageRef.current || !currentChapter || !contentRef.current) {
       console.warn('⚠️ 创建划线缺少必要参数');
       return;
@@ -837,10 +1228,11 @@ export default function Read({ file, bookId }: ReadProps) {
 
       // 清除选择和提示框
       selection.removeAllRanges();
+      clearTempHighlightOverlay();
       setShowHighlightTooltip(false);
       selectedRangeDataRef.current = null;
     }
-  }, [currentChapter, bookId, restoreAllHighlights]);
+  }, [currentChapter, bookId, restoreAllHighlights, clearTempHighlightOverlay]);
 
   // 点击外部区域关闭提示框
   useEffect(() => {
@@ -851,6 +1243,7 @@ export default function Read({ file, bookId }: ReadProps) {
           setShowHighlightTooltip(false);
           selectedRangeDataRef.current = null;
           window.getSelection()?.removeAllRanges();
+          clearTempHighlightOverlay();
         }
       }
     };
@@ -859,7 +1252,42 @@ export default function Read({ file, bookId }: ReadProps) {
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showHighlightTooltip]);
+  }, [showHighlightTooltip, clearTempHighlightOverlay]);
+
+  useEffect(() => {
+    const container = contentRef.current;
+    if (!container || !storageRef.current) return;
+    let timer: number | undefined;
+
+    const persistScroll = async () => {
+      if (!storageRef.current) return;
+      const updated = await storageRef.current.updateBookMetadata(bookId, {
+        scrollTop: container.scrollTop,
+        lastReadAt: Date.now(),
+      });
+      if (updated) {
+        setBookMetadata(updated);
+        onMetadataChange?.(bookId);
+      }
+    };
+
+    const handleScroll = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(persistScroll, 400);
+    };
+
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [bookId, onMetadataChange]);
+
+  useEffect(() => {
+    if (!tooltipRef.current) return;
+    tooltipRef.current.style.left = `${tooltipPosition.x}px`;
+    tooltipRef.current.style.top = `${tooltipPosition.y}px`;
+  }, [tooltipPosition, showHighlightTooltip]);
 
   const handleAnalyzeContent = async () => {
     if (!currentChapter) return;
@@ -916,12 +1344,42 @@ export default function Read({ file, bookId }: ReadProps) {
     }
   };
 
+  const progressDisplay = Math.min(
+    100,
+    Math.max(0, (bookMetadata?.progress ?? 0) * 100)
+  ).toFixed(1);
+
   if (loading && !parser) {
     return <div className="loading">加载中...</div>;
   }
 
   return (
-    <div className="read-container">
+    <div className="read-shell">
+      <div className="read-topbar">
+        <div className="topbar-left">
+          {onExit && (
+            <button
+              className="topbar-back"
+              onClick={onExit}
+              type="button"
+            >
+              ← 返回图书馆
+            </button>
+          )}
+          <div className="topbar-title">
+            {bookMetadata?.title || "正在阅读"}
+          </div>
+        </div>
+        <div className="topbar-meta">
+          <span>进度 {progressDisplay}%</span>
+          {bookMetadata?.lastReadAt && (
+            <span>
+              最近阅读 {new Date(bookMetadata.lastReadAt).toLocaleString("zh-CN")}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="read-container">
       <div className="read-sidebar">
         <h2>目录</h2>
         <ul className="chapter-list">
@@ -929,12 +1387,13 @@ export default function Read({ file, bookId }: ReadProps) {
             .filter(chapter => chapter.title && chapter.title.trim().length > 0) // 再次过滤，确保不显示空标题
             .map((chapter, index) => {
               const level = chapter.level || 0;
-              const paddingLeft = level * 20; // 每级缩进20px
-              
+              const levelClass =
+                level >= 3 ? 'chapter-level-3' : `chapter-level-${level}`;
+              const isActive = currentChapter?.id === chapter.id;
               return (
                 <li
                   key={`${chapter.id}-${index}`}
-                  className={currentChapter?.id === chapter.id ? 'active' : ''}
+                  className={`chapter-item ${levelClass} ${isActive ? 'active' : ''}`}
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -945,14 +1404,7 @@ export default function Read({ file, bookId }: ReadProps) {
                     } else {
                       console.error('❌ Parser not initialized yet');
                     }
-                  }}
-                  style={{ 
-                    cursor: 'pointer',
-                    paddingLeft: `${paddingLeft}px`,
-                    fontWeight: level === 0 ? 'bold' : 'normal',
-                    fontSize: level === 0 ? '1em' : level === 1 ? '0.95em' : '0.9em',
-                  }}
-                >
+                  }}>
                   <span>{chapter.title}</span>
                 </li>
               );
@@ -977,9 +1429,10 @@ export default function Read({ file, bookId }: ReadProps) {
                 const stored = highlight as StoredHighlight;
                 const chapterId = stored.chapterId || highlightChapterMap.get(highlight.id);
                 return (
-                  <li
-                    key={highlight.id}
-                    onClick={(e) => {
+                <li
+                  key={highlight.id}
+                  className={`highlight-item ${chapterId ? 'clickable' : ''}`}
+                  onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
                       
@@ -992,13 +1445,12 @@ export default function Read({ file, bookId }: ReadProps) {
                       } else {
                         console.warn('Parser not ready');
                       }
-                    }}
-                    onMouseDown={(e) => {
+                  }}
+                  onMouseDown={(e) => {
                       e.preventDefault();
-                    }}
-                    style={{ cursor: chapterId ? 'pointer' : 'default' }}
-                    title={chapterId ? '点击跳转到该章节' : ''}
-                  >
+                  }}
+                  title={chapterId ? '点击跳转到该章节' : ''}
+                >
                     <div className="highlight-text">{highlight.text}</div>
                     {highlight.note && (
                       <div className="highlight-note">{highlight.note}</div>
@@ -1091,13 +1543,7 @@ export default function Read({ file, bookId }: ReadProps) {
             {showHighlightTooltip && (
               <div
                 className="highlight-tooltip"
-                style={{
-                  position: 'absolute',
-                  left: `${tooltipPosition.x}px`,
-                  top: `${tooltipPosition.y}px`,
-                  transform: 'translateX(-50%)',
-                  zIndex: 1000,
-                }}
+                ref={tooltipRef}
                 onClick={(e) => e.stopPropagation()}
               >
                 <button
@@ -1178,6 +1624,7 @@ export default function Read({ file, bookId }: ReadProps) {
           </div>
         )}
       </div>
+    </div>
     </div>
   );
 }

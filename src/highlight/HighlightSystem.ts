@@ -38,6 +38,7 @@ export interface Highlight {
   isCrossParagraph?: boolean; // 是否跨段落
   createdAt: number;
   updatedAt: number;
+  tags?: string[];
 }
 
 export class HighlightSystem {
@@ -581,76 +582,6 @@ export class HighlightSystem {
     return `note-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  /**
-   * 检测 Range 是否跨段落
-   */
-  isCrossParagraph(range: Range): boolean {
-    if (!range || range.collapsed) return false;
-
-    try {
-      const startContainer = range.startContainer;
-      const endContainer = range.endContainer;
-
-      // 如果开始和结束容器不同，可能跨段落
-      if (startContainer !== endContainer) {
-        // 检查是否跨越了块级元素（如 p, div, h1-h6 等）
-        const blockElements = [
-          "P",
-          "DIV",
-          "H1",
-          "H2",
-          "H3",
-          "H4",
-          "H5",
-          "H6",
-          "LI",
-          "BLOCKQUOTE",
-        ];
-
-        let startBlock: Element | null = null;
-        let endBlock: Element | null = null;
-
-        // 查找开始和结束的块级元素
-        // 如果没有 container，使用 document.body 作为边界
-        const boundary = this.container || document.body;
-
-        let node: Node | null = startContainer;
-        while (node && node !== boundary && node !== document.body) {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            const el = node as Element;
-            if (blockElements.includes(el.tagName)) {
-              startBlock = el;
-              break;
-            }
-          }
-          node = node.parentNode;
-        }
-
-        node = endContainer;
-        while (node && node !== boundary && node !== document.body) {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            const el = node as Element;
-            if (blockElements.includes(el.tagName)) {
-              endBlock = el;
-              break;
-            }
-          }
-          node = node.parentNode;
-        }
-
-        // 如果开始和结束的块级元素不同，则跨段落
-        return (
-          startBlock !== null && endBlock !== null && startBlock !== endBlock
-        );
-      }
-
-      return false;
-    } catch (error) {
-      // 如果检测失败，默认返回 false（不跨段落）
-      console.warn("⚠️ 检测跨段落失败，默认返回 false:", error);
-      return false;
-    }
-  }
 
   /**
    * 检测两个划线的关系
@@ -965,7 +896,7 @@ export class HighlightSystem {
   }
 
   /**
-   * 将Range包裹进highlight span（容错实现）
+   * 将Range包裹进highlight span（容错实现，不改变段落结构）
    */
   wrapRangeWithHighlight(
     range: Range,
@@ -979,6 +910,20 @@ export class HighlightSystem {
 
     const doc = range.startContainer.ownerDocument || document;
 
+    // 检查是否跨段落
+    const isCrossParagraph = this.isCrossParagraph(range);
+
+    if (isCrossParagraph) {
+      // 跨段落情况：遍历所有文本节点，只对文本节点添加下划线
+      console.log("📝 检测到跨段落选择，使用精细方法处理");
+      const result = this.wrapCrossParagraphRange(range, highlightId, color);
+      if (!result) {
+        console.error("❌ wrapCrossParagraphRange 返回 null，跨段落划线失败");
+      }
+      return result;
+    }
+
+    // 单段落情况：优先尝试 surroundContents（简单快速）
     const wrapper = doc.createElement("span");
     wrapper.className = "epub-highlight underline";
     wrapper.dataset.highlightId = highlightId;
@@ -987,33 +932,188 @@ export class HighlightSystem {
     wrapper.style.textDecorationThickness = "2px";
     wrapper.style.textUnderlineOffset = "3px";
     wrapper.style.cursor = "pointer";
-    // 确保划线元素不会阻止链接的点击
+    wrapper.style.display = "inline"; // 确保不改变布局
     wrapper.style.pointerEvents = "auto";
 
-    // 优先尝试 surroundContents（简单快速）
     try {
       range.surroundContents(wrapper);
       console.log("✅ wrapRangeWithHighlight: 使用surroundContents成功");
       return wrapper;
     } catch (e) {
-      // 当 range 跨越多个节点或复杂结构时，surroundContents 可能抛错
-      console.log("⚠️ surroundContents失败，使用fallback方法:", e);
-      try {
-        const contents = range.cloneContents();
-        wrapper.appendChild(contents);
-        // 删除原内容并插入 wrapper
-        range.deleteContents();
-        range.insertNode(wrapper);
-        console.log("✅ wrapRangeWithHighlight: 使用fallback方法成功");
-        return wrapper;
-      } catch (fallbackError) {
-        console.error(
-          "❌ wrapRangeWithHighlight: fallback方法也失败",
-          fallbackError
-        );
-        return null;
+      // 当 range 跨越多个节点或复杂结构时，使用精细方法
+      console.log("⚠️ surroundContents失败，使用精细方法:", e);
+      return this.wrapCrossParagraphRange(range, highlightId, color);
+    }
+  }
+
+  /**
+   * 检查 Range 是否跨段落
+   */
+  private isCrossParagraph(range: Range): boolean {
+    const startContainer = range.startContainer;
+    const endContainer = range.endContainer;
+
+    // 如果开始和结束容器不同，可能跨段落
+    if (startContainer !== endContainer) {
+      const blockElements = [
+        "P", "DIV", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "BLOCKQUOTE",
+      ];
+
+      let startBlock: Element | null = null;
+      let endBlock: Element | null = null;
+
+      // 查找开始和结束的块级元素
+      let node: Node | null = startContainer;
+      while (node && node !== document.body) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const el = node as Element;
+          if (blockElements.includes(el.tagName)) {
+            startBlock = el;
+            break;
+          }
+        }
+        node = node.parentNode;
+      }
+
+      node = endContainer;
+      while (node && node !== document.body) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const el = node as Element;
+          if (blockElements.includes(el.tagName)) {
+            endBlock = el;
+            break;
+          }
+        }
+        node = node.parentNode;
+      }
+
+      // 如果开始和结束的块级元素不同，则跨段落
+      return startBlock !== null && endBlock !== null && startBlock !== endBlock;
+    }
+
+    return false;
+  }
+
+  /**
+   * 包装跨段落的 Range（只对文本节点添加下划线，不改变段落结构）
+   */
+  private wrapCrossParagraphRange(
+    range: Range,
+    highlightId: string,
+    color: string
+  ): HTMLSpanElement | null {
+    const doc = range.startContainer.ownerDocument || document;
+    const root =
+      (this as any).container ||
+      (range.commonAncestorContainer as Element | null) ||
+      doc.body;
+
+    const wrappers: HTMLSpanElement[] = [];
+
+    // 收集与 range 相交的文本节点
+    type TextNodeInfo = { node: Text; startOffset: number; endOffset: number };
+    const textNodesToProcess: TextNodeInfo[] = [];
+
+    const iterator = doc.createNodeIterator(root, NodeFilter.SHOW_TEXT);
+    let n: Node | null;
+    let total = 0;
+    while ((n = iterator.nextNode())) {
+      total++;
+      const textNode = n as Text;
+      if (!textNode.parentNode) continue;
+      const text = textNode.nodeValue || "";
+      if (text.length === 0) continue;
+
+      // 判断是否与所选范围相交
+      let intersects = false;
+      if (typeof (range as any).intersectsNode === "function") {
+        try {
+          intersects = (range as any).intersectsNode(textNode);
+        } catch {
+          intersects = false;
+        }
+      } else {
+        // Fallback: 利用 selectNodeContents + compareBoundaryPoints
+        const textRange = doc.createRange();
+        textRange.selectNodeContents(textNode);
+        const endBeforeStart =
+          textRange.compareBoundaryPoints(Range.END_TO_START, range) < 0;
+        const startAfterEnd =
+          textRange.compareBoundaryPoints(Range.START_TO_END, range) > 0;
+        intersects = !(endBeforeStart || startAfterEnd);
+      }
+
+      if (!intersects) continue;
+
+      // 计算在该文本节点内的起止偏移
+      const startOffset =
+        range.startContainer === textNode ? range.startOffset : 0;
+      const endOffset =
+        range.endContainer === textNode ? range.endOffset : textNode.length;
+
+      if (startOffset < endOffset) {
+        textNodesToProcess.push({ node: textNode, startOffset, endOffset });
       }
     }
+
+    console.log(
+      `🔍 wrapCrossParagraphRange: 遍历了 ${total} 个文本节点，找到 ${textNodesToProcess.length} 个需要处理的节点`
+    );
+
+    let firstWrapper: HTMLSpanElement | null = null;
+    for (const { node: textNode, startOffset, endOffset } of textNodesToProcess) {
+      if (!textNode.parentNode) continue;
+
+      const wrapper = doc.createElement("span");
+      wrapper.className = "epub-highlight underline";
+      wrapper.dataset.highlightId = highlightId;
+      wrapper.style.textDecoration = "underline";
+      wrapper.style.textDecorationColor = color;
+      wrapper.style.textDecorationThickness = "2px";
+      wrapper.style.textUnderlineOffset = "3px";
+      wrapper.style.cursor = "pointer";
+      wrapper.style.display = "inline";
+      wrapper.style.pointerEvents = "auto";
+
+      try {
+        if (startOffset === 0 && endOffset === textNode.length) {
+          const parent = textNode.parentNode;
+          if (parent) {
+            parent.replaceChild(wrapper, textNode);
+            wrapper.appendChild(textNode);
+          }
+        } else {
+          // 正确的三段切分：原(textNode) -> pre | selected | post
+          const pre = textNode.splitText(startOffset);
+          const post = pre.splitText(endOffset - startOffset);
+          const selected = pre;
+
+          const parent = selected.parentNode;
+          if (parent) {
+            parent.replaceChild(wrapper, selected);
+            wrapper.appendChild(selected);
+            if (post && post.parentNode && wrapper.parentNode) {
+              wrapper.parentNode.insertBefore(post, wrapper.nextSibling);
+            }
+          }
+        }
+
+        if (!firstWrapper) firstWrapper = wrapper;
+        wrappers.push(wrapper);
+      } catch (e) {
+        console.warn("⚠️ 处理文本节点失败:", e, textNode);
+      }
+    }
+
+    if (wrappers.length > 0) {
+      console.log(
+        `✅ wrapCrossParagraphRange: 成功创建 ${wrappers.length} 个下划线片段`
+      );
+      return firstWrapper;
+    }
+
+    console.warn("⚠️ wrapCrossParagraphRange: 未找到有效的文本节点");
+    return null;
   }
 
   /**
