@@ -24,7 +24,7 @@ export interface EpubMetadata {
 }
 
 export class EpubParser {
-  private zipReader: zip.ZipReader | null = null;
+  private zipReader: zip.ZipReader<zip.Reader<unknown>> | null = null;
   private entries: zip.Entry[] = [];
   private chapters: EpubChapter[] = [];
   private metadata: EpubMetadata = {
@@ -35,6 +35,11 @@ export class EpubParser {
   private basePath: string = '';
   private chapterCache: Map<string, string> = new Map();
   private maxCacheSize: number = 10; // 最多缓存10个章节
+
+  // 类型守卫：判断是否为文件条目（具有 getData 方法）
+  private isFileEntry(entry: zip.Entry): entry is zip.FileEntry {
+    return !!entry && 'getData' in (entry as object);
+  }
 
   /**
    * 加载 EPUB 文件
@@ -90,16 +95,17 @@ export class EpubParser {
         entry.filename === 'META-INF\\container.xml'
     );
 
-    if (!containerEntry || !containerEntry.getData) {
+    if (!containerEntry || !this.isFileEntry(containerEntry)) {
       throw new Error('Invalid EPUB: container.xml not found');
     }
 
     const textWriter = new zip.TextWriter();
+    // 这行代码是用来读取 container.xml 文件的内容的, 意思是把 container.xml 文件的内容读取出来, 并返回一个字符串
     const containerXml = await containerEntry.getData(textWriter);
     
     // 解析 XML 获取 OPF 路径
     const parser = new DOMParser();
-    const doc = parser.parseFromString(containerXml, 'text/xml');
+    const doc = parser.parseFromString(containerXml, 'text/xml'); // 这里的 DOMParser.parseFromString 是浏览器内置 Web API，用于把字符串解析成 DOM（可以是 XML 或 HTML）, 这行代码是用来解析 container.xml 文件的, 意思是把 container.xml 文件的内容解析成一个 DOM 对象, 'text/xml'是解析的文件类型, 这里解析的是 XML 文件
     const rootfile = doc.querySelector('rootfile');
     
     if (!rootfile) {
@@ -118,7 +124,7 @@ export class EpubParser {
       (entry) => entry.filename === this.opfPath
     );
 
-    if (!opfEntry || !opfEntry.getData) {
+    if (!opfEntry || !this.isFileEntry(opfEntry)) {
       throw new Error('Invalid EPUB: OPF file not found');
     }
 
@@ -280,7 +286,7 @@ export class EpubParser {
       (entry) => entry.filename === ncxPath
     );
 
-    if (!ncxEntry || !ncxEntry.getData) {
+    if (!ncxEntry || !this.isFileEntry(ncxEntry)) {
       console.warn('⚠️ NCX文件未找到或无法读取:', ncxPath);
       return;
     }
@@ -290,7 +296,7 @@ export class EpubParser {
       const ncxXml = await ncxEntry.getData(textWriter);
       
       const parser = new DOMParser();
-      const doc = parser.parseFromString(ncxXml, 'text/xml');
+      const doc = parser.parseFromString(ncxXml, 'text/xml'); // 这里的 DOMParser.parseFromString 是浏览器内置 Web API，用于把字符串解析成 DOM（可以是 XML 或 HTML）
 
       // 检查解析错误
       const parserError = doc.querySelector('parsererror');
@@ -394,7 +400,7 @@ export class EpubParser {
       (entry) => entry.filename === navPath
     );
 
-    if (!navEntry || !navEntry.getData) {
+    if (!navEntry || !this.isFileEntry(navEntry)) {
       console.warn('⚠️ NAV文件未找到或无法读取:', navPath);
       return;
     }
@@ -535,7 +541,7 @@ export class EpubParser {
     }
 
     const entry = this.entries.find((e) => e.filename === chapter.href);
-    if (!entry || !entry.getData) {
+    if (!entry || !this.isFileEntry(entry)) {
       throw new Error(`Chapter file not found: ${chapter.href}`);
     }
 
@@ -549,8 +555,10 @@ export class EpubParser {
       // 缓存管理
       if (this.chapterCache.size >= this.maxCacheSize) {
         // 删除最早的缓存项
-        const firstKey = this.chapterCache.keys().next().value;
-        this.chapterCache.delete(firstKey);
+        const first = this.chapterCache.keys().next();
+        if (!first.done && first.value !== undefined) {
+          this.chapterCache.delete(first.value as string);
+        }
       }
       this.chapterCache.set(chapterId, processedContent);
 
@@ -593,7 +601,7 @@ export class EpubParser {
    */
   async loadResource(resourcePath: string): Promise<Blob | null> {
     const entry = this.entries.find((e) => e.filename === resourcePath);
-    if (!entry || !entry.getData) {
+    if (!entry || !this.isFileEntry(entry)) {
       return null;
     }
 
@@ -642,12 +650,12 @@ export class EpubParser {
         (entry) => entry.filename === coverPath
       );
       
-      if (!coverEntry || !coverEntry.getData) {
+      if (!coverEntry || !this.isFileEntry(coverEntry)) {
         console.warn('⚠️ 封面文件不存在:', coverPath);
         return null;
       }
       
-      return await this.loadResource(this.metadata.cover);
+      return await this.loadResource(this.metadata.cover!);
     } catch (error) {
       console.warn('⚠️ 加载封面失败:', error);
       return null;

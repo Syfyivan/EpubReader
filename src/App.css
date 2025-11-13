@@ -50,29 +50,29 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: #ffffff;
 }
 
 .app-header {
   text-align: center;
-  padding: 4rem 2rem 3rem;
-  color: white;
-  animation: fadeInDown 0.8s ease-out;
+  padding: 3rem 2rem 2rem;
+  color: #37352f;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  background: #ffffff;
 }
 
 .app-header h1 {
-  font-size: 3.5rem;
-  font-weight: 800;
-  margin-bottom: 1rem;
-  text-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-  letter-spacing: -0.025em;
+  font-size: 2.5rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  letter-spacing: -0.02em;
+  color: #37352f;
 }
 
 .app-header p {
-  font-size: 1.25rem;
-  opacity: 0.95;
-  font-weight: 300;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  font-size: 1rem;
+  color: #787774;
+  font-weight: 400;
 }
 
 .app-content {
@@ -91,11 +91,12 @@ body {
 .url-load,
 .features,
 .library-preview {
-  background: var(--bg-primary);
-  border-radius: var(--radius-xl);
-  padding: 2.5rem;
-  box-shadow: var(--shadow-xl);
-  transition: var(--transition);
+  background: #ffffff;
+  border-radius: 6px;
+  padding: 2rem;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: box-shadow 0.15s ease;
 }
 
 .file-upload:hover,

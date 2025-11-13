@@ -20,6 +20,7 @@ export interface HighlightNote {
   content: string;
   createdAt: number;
   updatedAt: number;
+  tags?: string[]; // 标签（可选）
 }
 
 export interface HighlightRelation {
@@ -1034,14 +1035,14 @@ export class HighlightSystem {
         }
       } else {
         // Fallback: 利用 selectNodeContents + compareBoundaryPoints
-        const textRange = doc.createRange();
-        textRange.selectNodeContents(textNode);
+      const textRange = doc.createRange();
+      textRange.selectNodeContents(textNode);
         const endBeforeStart =
           textRange.compareBoundaryPoints(Range.END_TO_START, range) < 0;
         const startAfterEnd =
           textRange.compareBoundaryPoints(Range.START_TO_END, range) > 0;
         intersects = !(endBeforeStart || startAfterEnd);
-      }
+        }
 
       if (!intersects) continue;
 
@@ -1052,7 +1053,7 @@ export class HighlightSystem {
         range.endContainer === textNode ? range.endOffset : textNode.length;
 
       if (startOffset < endOffset) {
-        textNodesToProcess.push({ node: textNode, startOffset, endOffset });
+      textNodesToProcess.push({ node: textNode, startOffset, endOffset });
       }
     }
 

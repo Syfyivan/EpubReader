@@ -9,7 +9,7 @@ export interface TooltipPosition {
 }
 
 export class SmartTooltipPositioner {
-  private static readonly TOOLTIP_OFFSET = 10; // tooltip 距离划线第一行的固定距离（像素）
+  private static readonly TOOLTIP_OFFSET = 20; // tooltip 距离划线第一行的固定距离（像素）
 
   /**
    * 计算 tooltip 位置
@@ -19,35 +19,28 @@ export class SmartTooltipPositioner {
     container: HTMLElement
   ): TooltipPosition {
     const rect = range.getBoundingClientRect();
-    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-    const scrollLeft =
-      window.pageXOffset || document.documentElement.scrollLeft;
+    const containerRect = container.getBoundingClientRect();
 
     // 获取第一行的位置（用于垂直定位）
-    const firstLineRect = this.getFirstLineRect(range);
+    const firstLineRect = this.getFirstLineRect(range) || rect;
 
     let tooltipX: number;
     let tooltipY: number;
 
     // 判断是否占满一行（宽度接近容器宽度）
-    const containerWidth = container.clientWidth || window.innerWidth;
+    const containerWidth = container.clientWidth;
     const isFullLine = rect.width >= containerWidth * 0.9;
 
     if (isFullLine) {
-      // 如果占满一行，水平位置固定在屏幕中心
-      tooltipX = scrollLeft + window.innerWidth / 2;
+      // 如果占满一行，水平位置固定在容器中心（容器坐标系）
+      tooltipX = containerWidth / 2;
     } else {
-      // 否则保持在勾选区域中心
-      tooltipX = rect.left + scrollLeft + rect.width / 2;
+      // 否则保持在选区中心（容器坐标系）
+      tooltipX = (rect.left - containerRect.left) + rect.width / 2;
     }
 
-    // 垂直方向：在划线第一行上方固定距离
-    if (firstLineRect) {
-      tooltipY = firstLineRect.top + scrollTop - this.TOOLTIP_OFFSET;
-    } else {
-      // 如果没有第一行信息，使用 range 的顶部
-      tooltipY = rect.top + scrollTop - this.TOOLTIP_OFFSET;
-    }
+    // 垂直方向：在划线第一行上方固定距离（容器坐标系）
+    tooltipY = (firstLineRect.top - containerRect.top) - this.TOOLTIP_OFFSET;
 
     return { x: tooltipX, y: tooltipY };
   }

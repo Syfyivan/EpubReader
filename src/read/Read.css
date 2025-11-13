@@ -19,13 +19,13 @@
   justify-content: space-between;
   align-items: center;
   gap: 1.5rem;
-  padding: 1rem 1.75rem;
-  min-height: 72px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(236, 72, 153, 0.18));
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid rgba(99, 102, 241, 0.25);
-  box-shadow: 0 6px 24px -12px rgba(99, 102, 241, 0.6);
+  padding: 0.75rem 1.5rem;
+  min-height: 56px;
+  background: rgba(255, 255, 255, 0.8);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .topbar-left {
@@ -35,26 +35,25 @@
 }
 
 .topbar-back {
-  padding: 0.5rem 1rem;
-  border-radius: var(--radius-md);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
   border: none;
-  background: rgba(255, 255, 255, 0.85);
-  color: var(--primary-color);
-  font-weight: 600;
+  background: transparent;
+  color: #37352f;
+  font-weight: 400;
+  font-size: 14px;
   cursor: pointer;
-  box-shadow: var(--shadow-sm);
-  transition: var(--transition);
+  transition: background-color 0.1s ease;
 }
 
 .topbar-back:hover {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-md);
+  background: rgba(55, 53, 47, 0.08);
 }
 
 .topbar-title {
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  color: #37352f;
 }
 
 .topbar-meta {
@@ -85,16 +84,15 @@
 
 /* 侧边栏样式 */
 .read-sidebar {
-  width: 320px;
-  background: var(--bg-primary);
-  border-right: 1px solid var(--border-color);
+  width: 280px;
+  background: #ffffff;
+  border-right: 1px solid rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: var(--shadow-lg);
   position: sticky;
-  top: 72px;
-  height: calc(100vh - 72px);
+  top: 56px;
+  height: calc(100vh - 56px);
 }
 
 .read-sidebar h2 {
@@ -293,13 +291,12 @@
 /* 主内容区 */
 .read-content {
   flex: 1;
-  max-width: 800px;
+  max-width: 900px;
   margin: 0 auto;
-  padding: 3rem 2rem;
-  background: var(--bg-primary);
+  padding: 2rem 3rem;
+  background: #ffffff;
   position: relative; /* 为提示框提供定位上下文 */
-  min-height: calc(100vh - 72px);
-  box-shadow: var(--shadow-lg);
+  min-height: calc(100vh - 56px);
 }
 
 .chapter-header {
@@ -416,73 +413,93 @@
   white-space: nowrap;
 }
 
-/* 划线提示框 */
+/* 划线提示框 - Notion 风格 */
 .highlight-tooltip {
-  background: white;
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  padding: 0.5rem;
-  display: flex;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 3px;
+  padding: 2px;
+  display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  animation: fadeIn 0.2s ease;
+  gap: 0;
+  box-shadow: rgba(15, 15, 15, 0.05) 0px 0px 0px 1px, rgba(15, 15, 15, 0.1) 0px 3px 6px, rgba(15, 15, 15, 0.2) 0px 9px 24px;
+  animation: fadeInTooltip 0.12s ease-out;
 }
 
-@keyframes fadeIn {
+@keyframes fadeInTooltip {
   from {
     opacity: 0;
-    transform: translateX(-50%) translateY(-10px);
+    transform: translateX(-50%) translateY(-4px) scale(0.96);
   }
   to {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateX(-50%) translateY(0) scale(1);
   }
 }
 
-.highlight-button {
+.highlight-tooltip .tooltip-actions {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  background: var(--primary-color);
-  color: white;
+  gap: 2px;
+}
+
+.highlight-button,
+.tooltip-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  color: #37352f;
   border: none;
-  border-radius: var(--radius-md);
-  font-size: 0.9rem;
-  font-weight: 600;
+  border-radius: 3px;
+  font-size: 14px;
+  font-weight: 400;
   cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: var(--shadow-sm);
+  transition: background-color 0.1s ease;
+  white-space: nowrap;
+  min-height: 28px;
 }
 
-.highlight-button:hover {
-  background: var(--secondary-color);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
+.highlight-button:hover,
+.tooltip-button:hover {
+  background: rgba(55, 53, 47, 0.08);
 }
 
-.highlight-button:active {
-  transform: translateY(0);
+.highlight-button:active,
+.tooltip-button:active {
+  background: rgba(55, 53, 47, 0.12);
+}
+
+.highlight-button span:first-child,
+.tooltip-button span:first-child {
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
 }
 
 .underline-icon {
-  font-size: 1.2rem;
-  font-weight: 700;
+  font-size: 18px;
+  font-weight: 400;
   line-height: 1;
+  color: #37352f;
 }
 
-/* 管理现有划线的浮层 */
+/* 管理现有划线的浮层 - Notion 风格 */
 .highlight-manage-tooltip {
   position: fixed;
   transform: translate(-50%, -100%);
   z-index: 1001;
   display: flex;
-  gap: 0.5rem;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  padding: 0.5rem 0.6rem;
-  box-shadow: var(--shadow-md);
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04);
 }
 
 /* AI 可拖动面板 */
@@ -861,3 +878,4 @@
 .ai-analysis::-webkit-scrollbar-thumb:hover {
   background: var(--text-secondary);
 }
+

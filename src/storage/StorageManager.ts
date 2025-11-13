@@ -10,6 +10,7 @@ import type { Highlight } from "../highlight/HighlightSystem";
 export interface StoredHighlight extends Highlight {
   bookId: string;
   chapterId: string;
+  chapterTitle?: string; // 冗余存储章节名，便于展示
   category?: string;
   source?: "local" | "wechat";
 }
@@ -70,7 +71,7 @@ interface EpubReaderDB extends DBSchema {
   highlights: {
     key: string;
     value: StoredHighlight;
-    indexes: { "by-book": string; "by-chapter": string; "by-date": number };
+    indexes: { "by-book": string; "by-chapter": string; "by-date": number; "by-tag": string };
   };
   notes: {
     key: string;
@@ -91,7 +92,7 @@ interface EpubReaderDB extends DBSchema {
 export class StorageManager {
   private db: IDBPDatabase<EpubReaderDB> | null = null;
   private dbName = "epub-reader-db";
-  private version = 2;
+  private version = 3;
 
   /**
    * 初始化数据库
@@ -100,7 +101,7 @@ export class StorageManager {
     if (this.db) return;
 
     this.db = await openDB<EpubReaderDB>(this.dbName, this.version, {
-      upgrade(db, oldVersion) {
+      upgrade(db, oldVersion, _newVersion, tx) {
         if (oldVersion < 1) {
           const highlightStore = db.createObjectStore("highlights", {
             keyPath: "id",
@@ -108,6 +109,7 @@ export class StorageManager {
           highlightStore.createIndex("by-book", "bookId");
           highlightStore.createIndex("by-chapter", "chapterId");
           highlightStore.createIndex("by-date", "createdAt");
+          highlightStore.createIndex("by-tag", "tags", { multiEntry: true });
 
           const noteStore = db.createObjectStore("notes", {
             keyPath: "id",
@@ -128,6 +130,14 @@ export class StorageManager {
               keyPath: "bookId",
             });
           }
+        }
+
+        if (oldVersion < 3) {
+          // 为 highlights 增加 by-tag 索引
+          const highlightStore = tx.objectStore("highlights");
+          try {
+            highlightStore.createIndex("by-tag", "tags", { multiEntry: true });
+          } catch {}
         }
       },
     });
@@ -161,6 +171,19 @@ export class StorageManager {
     const tx = this.db!.transaction("highlights", "readonly");
     const index = tx.store.index("by-book");
     return await index.getAll(bookId);
+  }
+
+  async getAllHighlights(): Promise<StoredHighlight[]> {
+    if (!this.db) await this.init();
+    const tx = this.db!.transaction("highlights", "readonly");
+    return await tx.store.getAll();
+  }
+
+  async getHighlightsByTag(tag: string): Promise<StoredHighlight[]> {
+    if (!this.db) await this.init();
+    const tx = this.db!.transaction("highlights", "readonly");
+    const index = tx.store.index("by-tag");
+    return await index.getAll(tag);
   }
 
   /**
@@ -266,6 +289,34 @@ export class StorageManager {
       createdAt: note.createdAt ?? Date.now(),
       updatedAt: note.updatedAt ?? Date.now(),
     };
+  }
+
+  async getAllTags(): Promise<string[]> {
+    if (!this.db) await this.init();
+    const [allHighlights, allNotes] = await Promise.all([
+      this.getAllHighlights(),
+      this.getAllNotes(),
+    ]);
+    const set = new Set<string>();
+    allHighlights.forEach(h => (h.tags || []).forEach(t => set.add(t)));
+    allNotes.forEach(n => (n.tags || []).forEach(t => set.add(t)));
+    return Array.from(set).sort((a,b)=>a.localeCompare(b,'zh-CN'));
+  }
+
+  async getByTag(tag: string): Promise<{highlights: StoredHighlight[]; notes: BookNote[]}> {
+    if (!this.db) await this.init();
+    const [hl, notes] = await Promise.all([
+      this.getHighlightsByTag(tag),
+      this.getNotesByTag(tag),
+    ]);
+    return { highlights: hl, notes };
+  }
+
+  async suggestTags(prefix: string, limit = 8): Promise<string[]> {
+    const all = await this.getAllTags();
+    const q = prefix.trim().toLowerCase();
+    if (!q) return all.slice(0, limit);
+    return all.filter(t => t.toLowerCase().includes(q)).slice(0, limit);
   }
 
   /**
@@ -501,11 +552,8 @@ export class StorageManager {
         ensureBucket(byTagMap, tag, tag, "tag").highlights.push(highlight);
       });
 
-      const chapterKey = highlight.chapterId || "未关联章节";
-      const chapterTitle =
-        highlight.chapterId && highlight.chapterId.trim().length > 0
-          ? highlight.chapterId
-          : "未关联章节";
+      const chapterKey = highlight.chapterId || highlight.chapterTitle || "未关联章节";
+      const chapterTitle = highlight.chapterTitle || highlight.chapterId || "未关联章节";
       ensureBucket(
         byChapterMap,
         chapterKey,
