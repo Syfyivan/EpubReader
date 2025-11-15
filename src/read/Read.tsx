@@ -124,9 +124,21 @@ export default function Read({
       tempHighlightRangeRef.current = range.cloneRange();
 
       // 获取 range 的所有矩形区域（可能跨多行）
-      const rects = range.getClientRects();
+      let rects = range.getClientRects();
       if (rects.length === 0) {
-        console.warn('⚠️ createTempHighlightOverlay: 无法获取 range 的矩形区域');
+        // 初次可能布局未稳定，稍后重试一次
+        console.warn('⚠️ createTempHighlightOverlay: 首次未获取到矩形，100ms后重试');
+        setTimeout(() => {
+          try {
+            const retryRects = range.getClientRects();
+            if (retryRects.length > 0) {
+              // 递归调用自身以继续创建
+              createTempHighlightOverlay(range);
+            } else {
+              console.warn('⚠️ 重试仍然未获取到矩形，放弃创建临时高亮');
+            }
+          } catch (e) { console.warn('⚠️ 重试获取矩形失败', e); }
+        }, 100);
         return;
       }
 
@@ -880,11 +892,36 @@ export default function Read({
 
         // 加载已保存的划线
         const savedHighlights = await storage.getHighlightsByBook(bookId);
-        // 转换 StoredHighlight 为 Highlight（去掉 bookId 和 chapterId）
-        setHighlights(savedHighlights);
+
+        // 迁移：补齐缺失的章节标题（仅对当前书执行）
+        try {
+          const toUpdate: StoredHighlight[] = [];
+          savedHighlights.forEach((h) => {
+            const sh = h as StoredHighlight;
+            if (!sh.chapterTitle || !sh.chapterTitle.trim()) {
+              const ch = epubParser.getChapter(sh.chapterId);
+              const title = ch?.title && ch.title.trim()
+                ? ch.title
+                : (ch?.href?.split('/').pop()?.replace(/\.[^.]+$/, '') || sh.chapterId);
+              toUpdate.push({ ...sh, chapterTitle: title });
+            }
+          });
+          for (const item of toUpdate) {
+            await storage.saveHighlight(item);
+          }
+          if (toUpdate.length) {
+            const refreshed = await storage.getHighlightsByBook(bookId);
+            setHighlights(refreshed);
+          } else {
+            setHighlights(savedHighlights);
+          }
+        } catch {
+          setHighlights(savedHighlights);
+        }
+
         // 创建 highlightId -> chapterId 的映射
         const chapterMap = new Map<string, string>();
-        savedHighlights.forEach((h) => {
+        (savedHighlights || []).forEach((h) => {
           const stored = h as StoredHighlight;
           if (stored.chapterId) {
             chapterMap.set(h.id, stored.chapterId);
@@ -1043,15 +1080,18 @@ export default function Read({
       setShowHighlightTooltip(true);
       
       // 创建临时高亮覆盖层（不修改DOM，使用绝对定位）
-      // 先创建临时高亮，然后再清除浏览器默认选择
-      // 立即创建，不等待动画帧，确保在章节重新渲染前创建
-      createTempHighlightOverlay(range);
+      // 使用双重 rAF 确保 DOM 布局稳定后再计算矩形，避免首次不显示
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          createTempHighlightOverlay(range);
+        });
+      });
       
       // 延迟清除浏览器选择，确保临时高亮已经完全创建并渲染
       setTimeout(() => {
         window.getSelection()?.removeAllRanges();
         console.log('🧹 已清除浏览器选择，临时高亮应该已显示');
-      }, 50);
+      }, 80);
     } catch (error) {
       console.error('❌ 保存选中范围时出错:', error);
       setShowHighlightTooltip(false);
@@ -1172,6 +1212,7 @@ export default function Read({
         ...highlight,
         bookId,
         chapterId: currentChapter.id,
+        chapterTitle: (currentChapter.title && currentChapter.title.trim()) ? currentChapter.title : (currentChapter.href?.split('/').pop()?.replace(/\.[^.]+$/, '') || currentChapter.id),
       };
 
       // 在DOM中应用下划线样式（在状态更新之前，避免被清除）
@@ -1350,6 +1391,7 @@ export default function Read({
       ...highlight,
       bookId,
       chapterId: currentChapter.id,
+      chapterTitle: (currentChapter.title && currentChapter.title.trim()) ? currentChapter.title : (currentChapter.href?.split('/').pop()?.replace(/\.[^.]+$/, '') || currentChapter.id),
     };
     highlightSystemRef.current.highlights.set(highlight.id, storedHighlight);
     storageRef.current.saveHighlight(storedHighlight);
@@ -1415,6 +1457,27 @@ export default function Read({
       });
     });
   }, [noteManagerHighlightId, restoreAllHighlights]);
+
+  // 更新笔记标签
+  const handleNoteManagerUpdateTags = useCallback((noteId: string, tags: string[]) => {
+    if (!noteManagerHighlightId || !highlightSystemRef.current || !storageRef.current) return;
+    const h = highlightSystemRef.current.highlights.get(noteManagerHighlightId) as StoredHighlight | undefined;
+    if (!h || !h.notes) return;
+    const clean = Array.from(new Set((tags || []).filter(Boolean)));
+    const nextNotes = h.notes.map(n => n.id === noteId ? { ...n, tags: clean } : n);
+    // 统一更新 highlight.tags = 所有 note.tags 的并集（用于标签中心展示高亮）
+    const union = Array.from(new Set(nextNotes.flatMap(n => n.tags || [])));
+    const updated: StoredHighlight = { ...h, notes: nextNotes, tags: union };
+    highlightSystemRef.current.highlights.set(noteManagerHighlightId, updated);
+    storageRef.current.saveHighlight(updated);
+    setHighlights(prev => {
+      const idx = prev.findIndex(x => x.id === noteManagerHighlightId);
+      if (idx === -1) return prev;
+      const arr = [...prev];
+      arr[idx] = updated;
+      return arr;
+    });
+  }, [noteManagerHighlightId]);
 
   const handleNoteManagerEdit = useCallback((noteId: string, content: string) => {
     if (!noteManagerHighlightId || !highlightSystemRef.current || !storageRef.current || !contentRef.current) return;
@@ -2011,28 +2074,14 @@ export default function Read({
                 <button
                   className="highlight-button"
                   onClick={async () => {
-                    if (!highlightSystemRef.current || !contentRef.current || !manageHighlightId) return;
-                    const text = window.prompt('输入新增笔记内容：', '');
-                    if (text === null) return;
-                    const h = highlightSystemRef.current.highlights.get(manageHighlightId);
-                    if (!h) return;
-                    const now = Date.now();
-                    const newNote = { id: `note-${now}-${Math.random().toString(36).slice(2,6)}`, content: text.trim(), createdAt: now, updatedAt: now };
-                    const updated: StoredHighlight = { ...(h as StoredHighlight), notes: [...(h.notes || []), newNote] };
-                    highlightSystemRef.current.highlights.set(manageHighlightId, updated);
-                    highlightSystemRef.current.insertNoteAfterHighlight(manageHighlightId, contentRef.current);
+                    // 改为使用 NoteManager 对话框新增笔记（带标签）
+                    if (!manageHighlightId) return;
+                    setNoteManagerHighlightId(manageHighlightId);
                     if (storageRef.current) {
-                      await storageRef.current.saveHighlight(updated);
+                      storageRef.current.getAllTags().then(setAllTags).catch(() => {});
                     }
-                    setHighlights((prev) => {
-                      const idx = prev.findIndex((x) => x.id === manageHighlightId);
-                      if (idx === -1) return prev;
-                      const next = [...prev];
-                      next[idx] = updated;
-                      return next;
-                    });
+                    setShowNoteManager(true);
                     setShowManageTooltip(false);
-                    setManageHighlightId(null);
                   }}
                 >
                   新增笔记
@@ -2218,6 +2267,19 @@ export default function Read({
         )}
       </div>
     </div>
+    {showNoteManager && noteManagerHighlightId && (
+      <NoteManager
+        notes={
+          ((highlightSystemRef.current?.highlights.get(noteManagerHighlightId) as StoredHighlight | undefined)?.notes) || []
+        }
+        onAdd={handleNoteManagerAdd}
+        onEdit={handleNoteManagerEdit}
+        onDelete={handleNoteManagerDelete}
+        onUpdateTags={handleNoteManagerUpdateTags}
+        onClose={() => { setShowNoteManager(false); setNoteManagerHighlightId(null); }}
+        allTags={allTags}
+      />
+    )}
     </div>
   );
 }

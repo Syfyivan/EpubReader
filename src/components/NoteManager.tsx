@@ -7,6 +7,7 @@ interface NoteManagerProps {
   onAdd: (content: string, tags: string[]) => void;
   onEdit: (noteId: string, content: string) => void;
   onDelete: (noteIds: string[]) => void;
+  onUpdateTags: (noteId: string, tags: string[]) => void;
   onClose: () => void;
   allTags?: string[]; // 用于联想提示的标签列表
 }
@@ -16,6 +17,7 @@ export function NoteManager({
   onAdd,
   onEdit,
   onDelete,
+  onUpdateTags,
   onClose,
   allTags = [],
 }: NoteManagerProps) {
@@ -26,6 +28,7 @@ export function NoteManager({
   const [newNoteContent, setNewNoteContent] = useState<string>('');
   const [tagInput, setTagInput] = useState('');
   const [newNoteTags, setNewNoteTags] = useState<string[]>([]);
+  const [perNoteTagInput, setPerNoteTagInput] = useState<Record<string, string>>({});
 
   const suggestions = useMemo(() => {
     const q = tagInput.trim().toLowerCase();
@@ -108,11 +111,21 @@ export function NoteManager({
   };
 
   return (
-    <div className="note-manager-overlay" onClick={onClose}>
+    <div
+      className="note-manager-overlay"
+      onClick={onClose}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+      tabIndex={-1}
+    >
       <div className="note-manager-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="note-manager-header">
           <h3>笔记管理</h3>
-          <button className="close-button" onClick={onClose}>×</button>
+          <button className="close-button" onClick={onClose} aria-label="关闭">×</button>
         </div>
 
         <div className="note-manager-content">
@@ -183,6 +196,23 @@ export function NoteManager({
                   const isExpanded = expandedIds.has(note.id);
                   const isSelected = selectedIds.has(note.id);
                   const isEditing = editingId === note.id;
+                  const noteTags = Array.isArray(note.tags) ? note.tags : [];
+                  const inputVal = perNoteTagInput[note.id] ?? "";
+                  const noteSuggestions = allTags
+                    .filter(t => t.toLowerCase().includes(inputVal.toLowerCase()) && !noteTags.includes(t))
+                    .slice(0, 8);
+
+                  const addNoteTag = (tag: string) => {
+                    const t = tag.trim();
+                    if (!t) return;
+                    const next = Array.from(new Set([...noteTags, t]));
+                    onUpdateTags(note.id, next);
+                    setPerNoteTagInput(prev => ({ ...prev, [note.id]: "" }));
+                  };
+                  const removeNoteTag = (tag: string) => {
+                    const next = noteTags.filter(x => x !== tag);
+                    onUpdateTags(note.id, next);
+                  };
 
                   return (
                     <div
@@ -217,6 +247,33 @@ export function NoteManager({
                               )}
                             </div>
                           )}
+                          {/* 标签行 */}
+                          <div className="tag-input" onClick={(e) => e.stopPropagation()}>
+                            <div className="tag-list">
+                              {noteTags.map(tag => (
+                                <span className="tag-chip" key={tag} onClick={() => removeNoteTag(tag)}>{tag} ×</span>
+                              ))}
+                            </div>
+                            <input
+                              type="text"
+                              placeholder="为该笔记添加标签后回车，或从下方选择"
+                              value={inputVal}
+                              onChange={(e) => setPerNoteTagInput(prev => ({ ...prev, [note.id]: e.target.value }))}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  addNoteTag(inputVal);
+                                }
+                              }}
+                            />
+                            {inputVal && noteSuggestions.length > 0 && (
+                              <ul className="tag-suggestions">
+                                {noteSuggestions.map(s => (
+                                  <li key={s} onMouseDown={() => addNoteTag(s)}>{s}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
                         </div>
                         <div className="note-actions">
                           {isEditing ? (

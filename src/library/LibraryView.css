@@ -373,6 +373,16 @@
   border-radius: var(--radius-sm);
   background: rgba(255, 255, 255, 0.6);
   line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.bucket-preview li.expanded {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
 }
 
 .bucket-more {

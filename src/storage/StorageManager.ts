@@ -187,21 +187,6 @@ export class StorageManager {
   }
 
   /**
-   * 获取章节的所有划线
-   */
-  async getHighlightsByChapter(
-    bookId: string,
-    chapterId: string
-  ): Promise<StoredHighlight[]> {
-    if (!this.db) await this.init();
-
-    const tx = this.db!.transaction("highlights", "readonly");
-    const index = tx.store.index("by-chapter");
-    const results = await index.getAll(chapterId);
-    return results.filter((highlight) => highlight.bookId === bookId);
-  }
-
-  /**
    * 删除划线
    */
   async deleteHighlight(id: string): Promise<void> {
@@ -317,24 +302,6 @@ export class StorageManager {
     const q = prefix.trim().toLowerCase();
     if (!q) return all.slice(0, limit);
     return all.filter(t => t.toLowerCase().includes(q)).slice(0, limit);
-  }
-
-  /**
-   * 搜索笔记
-   */
-  async searchNotes(query: string): Promise<BookNote[]> {
-    if (!this.db) await this.init();
-
-    const tx = this.db!.transaction("notes", "readonly");
-    const allNotes = await tx.store.getAll();
-
-    const lowerQuery = query.toLowerCase();
-    return allNotes.filter(
-      (n) =>
-        n.title.toLowerCase().includes(lowerQuery) ||
-        n.content.toLowerCase().includes(lowerQuery) ||
-        n.tags.some((tag) => tag.toLowerCase().includes(lowerQuery))
-    );
   }
 
   /**
@@ -504,7 +471,7 @@ export class StorageManager {
   }
 
   /**
-   * 自动整理笔记和划线
+   * 自动整理笔记和划线（单本）
    */
   async getOrganizedAnnotations(
     bookId: string
@@ -516,6 +483,25 @@ export class StorageManager {
       this.getNotesByBook(bookId),
     ]);
 
+    return this.organizeBuckets(highlights, notes);
+  }
+
+  /**
+   * 自动整理笔记和划线（全部图书）
+   */
+  async getOrganizedAnnotationsAll(): Promise<OrganizedAnnotations> {
+    if (!this.db) await this.init();
+    const [highlights, notes] = await Promise.all([
+      this.getAllHighlights(),
+      this.getAllNotes(),
+    ]);
+    return this.organizeBuckets(highlights, notes);
+  }
+
+  private organizeBuckets(
+    highlights: StoredHighlight[],
+    notes: BookNote[]
+  ): OrganizedAnnotations {
     const byTagMap = new Map<string, AnnotationBucket>();
     const byChapterMap = new Map<string, AnnotationBucket>();
     const byDateMap = new Map<string, AnnotationBucket>();
@@ -540,38 +526,54 @@ export class StorageManager {
     };
 
     highlights.forEach((highlight) => {
-      const tags = highlight.tags ?? [];
+      const tags = highlight.tags && highlight.tags.length > 0 ? [...highlight.tags] : [];
       if (highlight.note && (!highlight.tags || highlight.tags.length === 0)) {
         tags.push("含笔记");
       }
       if (tags.length === 0) {
         tags.push("未分类");
       }
-
       tags.forEach((tag) => {
         ensureBucket(byTagMap, tag, tag, "tag").highlights.push(highlight);
       });
 
-      const chapterKey = highlight.chapterId || highlight.chapterTitle || "未关联章节";
+      const chapterKey = highlight.chapterTitle || highlight.chapterId || "未关联章节";
       const chapterTitle = highlight.chapterTitle || highlight.chapterId || "未关联章节";
-      ensureBucket(
-        byChapterMap,
-        chapterKey,
-        chapterTitle,
-        "chapter"
-      ).highlights.push(highlight);
+      ensureBucket(byChapterMap, chapterKey, chapterTitle, "chapter").highlights.push(highlight);
 
-      const dateKey = new Date(highlight.createdAt ?? Date.now())
-        .toISOString()
-        .slice(0, 10);
-      ensureBucket(byDateMap, dateKey, dateKey, "date").highlights.push(
-        highlight
-      );
+      const dateKey = new Date(highlight.createdAt ?? Date.now()).toISOString().slice(0, 10);
+      ensureBucket(byDateMap, dateKey, dateKey, "date").highlights.push(highlight);
 
       const sourceKey = highlight.source || "local";
-      ensureBucket(bySourceMap, sourceKey, sourceKey, "source").highlights.push(
-        highlight
-      );
+      ensureBucket(bySourceMap, sourceKey, sourceKey, "source").highlights.push(highlight);
+
+      // 将高亮下的内联笔记一并纳入整理
+      if (highlight.notes && highlight.notes.length > 0) {
+        highlight.notes.forEach((n) => {
+          const bn: BookNote = {
+            id: `${highlight.id}::${n.id}`,
+            bookId: highlight.bookId,
+            title: chapterTitle,
+            content: n.content,
+            chapter: chapterTitle,
+            tags: Array.isArray(n.tags) && n.tags.length > 0 ? n.tags : ["未分类"],
+            createdAt: n.createdAt || highlight.createdAt || Date.now(),
+            updatedAt: n.updatedAt || highlight.updatedAt || Date.now(),
+            source: highlight.source || "local",
+          };
+          // 标签
+          bn.tags.forEach((tag) => {
+            ensureBucket(byTagMap, tag, tag, "tag").notes.push(bn);
+          });
+          // 章节
+          ensureBucket(byChapterMap, chapterKey, chapterTitle, "chapter").notes.push(bn);
+          // 日期
+          const nd = new Date(bn.createdAt).toISOString().slice(0, 10);
+          ensureBucket(byDateMap, nd, nd, "date").notes.push(bn);
+          // 来源
+          ensureBucket(bySourceMap, bn.source || "local", bn.source || "local", "source").notes.push(bn);
+        });
+      }
     });
 
     notes.forEach((note) => {
@@ -581,32 +583,22 @@ export class StorageManager {
       });
 
       const chapterKey = note.chapter || "未关联章节";
-      const chapterTitle =
-        note.chapter && note.chapter.trim().length > 0
-          ? note.chapter
-          : "未关联章节";
-      ensureBucket(
-        byChapterMap,
-        chapterKey,
-        chapterTitle,
-        "chapter"
-      ).notes.push(note);
+      const chapterTitle = note.chapter && note.chapter.trim().length > 0 ? note.chapter : "未关联章节";
+      ensureBucket(byChapterMap, chapterKey, chapterTitle, "chapter").notes.push(note);
 
       const dateKey = new Date(note.createdAt).toISOString().slice(0, 10);
       ensureBucket(byDateMap, dateKey, dateKey, "date").notes.push(note);
 
-      ensureBucket(bySourceMap, "local", "本地笔记", "source").notes.push(note);
+      ensureBucket(bySourceMap, note.source || "local", note.source || "local", "source").notes.push(note);
     });
 
     const sortBuckets = (buckets: Map<string, AnnotationBucket>) =>
-      Array.from(buckets.values()).sort((a, b) =>
-        a.title.localeCompare(b.title, "zh-CN")
-      );
+      Array.from(buckets.values()).sort((a, b) => a.title.localeCompare(b.title, "zh-CN"));
 
     return {
       byTag: sortBuckets(byTagMap),
       byChapter: sortBuckets(byChapterMap),
-      byDate: sortBuckets(byDateMap).sort((a, b) => b.key.localeCompare(a.key)),
+      byDate: Array.from(byDateMap.values()).sort((a, b) => b.key.localeCompare(a.key)),
       bySource: sortBuckets(bySourceMap),
     };
   }

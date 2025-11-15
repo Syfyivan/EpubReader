@@ -93,9 +93,9 @@
 
 .add-note-button {
   padding: 8px 16px;
-  background: #6366f1;
-  color: white;
-  border: none;
+  background: #fff;
+  color: #111827;
+  border: 1px solid #d1d5db;
   border-radius: 6px;
   font-size: 14px;
   font-weight: 500;
@@ -104,13 +104,24 @@
 }
 
 .add-note-button:hover:not(:disabled) {
-  background: #4f46e5;
+  background: #f3f4f6;
 }
 
 .add-note-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* 标签输入样式 */
+.tag-input { position: relative; margin: 8px 0 12px; }
+.tag-list { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.tag-chip { padding: 3px 8px; border-radius: 999px; background: #eef2ff; color: #4338ca; font-size: 12px; cursor: pointer; border: 1px solid rgba(67,56,202,0.25); }
+.tag-chip:hover { background: #e0e7ff; }
+.tag-input input { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; }
+.tag-input input:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.1); }
+.tag-suggestions { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); z-index: 10; max-height: 180px; overflow: auto; }
+.tag-suggestions li { padding: 8px 10px; cursor: pointer; }
+.tag-suggestions li:hover { background: #f9fafb; }
 
 .notes-list {
   display: flex;

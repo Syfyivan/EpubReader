@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AnnotationBucket,
   BookMetadata,
@@ -8,6 +8,7 @@ import type {
 } from "../storage/StorageManager";
 import type { StorageManager } from "../storage/StorageManager";
 import "./LibraryView.css";
+import TagCenter from "./TagCenter";
 
 interface LibraryViewProps {
   books: BookMetadata[];
@@ -29,20 +30,29 @@ function renderBucketPreview(
   bucket: AnnotationBucket,
   type: "highlights" | "notes"
 ) {
-  const items =
-    type === "highlights" ? bucket.highlights : bucket.notes;
+  const items = type === "highlights" ? bucket.highlights : bucket.notes;
   if (items.length === 0) return null;
   const preview = items.slice(0, GROUP_PREVIEW_LIMIT);
-
+  const toggle = (e: React.MouseEvent<HTMLLIElement>) => {
+    e.currentTarget.classList.toggle("expanded");
+  };
   return (
     <ul className="bucket-preview">
       {preview.map((item) =>
         type === "highlights" ? (
-          <li key={(item as StoredHighlight).id}>
+          <li
+            key={(item as StoredHighlight).id}
+            onClick={toggle}
+            title={(item as StoredHighlight).text}
+          >
             {(item as StoredHighlight).text}
           </li>
         ) : (
-          <li key={(item as BookNote).id}>
+          <li
+            key={(item as BookNote).id}
+            onClick={toggle}
+            title={(item as BookNote).content}
+          >
             {(item as BookNote).content}
           </li>
         )
@@ -71,6 +81,7 @@ const LibraryView: React.FC<LibraryViewProps> = ({
   const [importing, setImporting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showTagCenter, setShowTagCenter] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedBook = useMemo(
@@ -332,6 +343,29 @@ const LibraryView: React.FC<LibraryViewProps> = ({
           <p>管理已阅读的 EPUB 书籍、划线与笔记。</p>
         </div>
         <div className="library-actions">
+          <button
+            type="button"
+            onClick={() => setShowTagCenter(true)}
+            className="ghost-button"
+            title="跨全部图书按标签整理"
+          >
+            标签中心
+          </button>
+          <button
+            type="button"
+            className="ghost-button danger"
+            onClick={async () => {
+              if (window.confirm("确定要重置所有本地数据吗？此操作不可恢复。")) {
+                await storageManager.clearAll();
+                await onRefresh();
+                setSelectedBookId(null);
+                setOrganized(null);
+                setMessage("已重置所有数据。");
+              }
+            }}
+          >
+            重置所有数据
+          </button>
           <button type="button" onClick={onBack} className="ghost-button">
             返回主页
           </button>
@@ -571,11 +605,17 @@ const LibraryView: React.FC<LibraryViewProps> = ({
         accept=".json,.txt,.md"
         className="hidden-file-input"
         onChange={handleFileSelected}
-      aria-label="导入微信读书文件"
+        aria-label="导入微信读书文件"
       />
+
+      {showTagCenter && (
+        <TagCenter
+          storageManager={storageManager}
+          onClose={() => setShowTagCenter(false)}
+        />
+      )}
     </div>
   );
 };
 
 export default LibraryView;
-
