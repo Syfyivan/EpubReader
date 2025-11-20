@@ -34,7 +34,6 @@ export class VirtualHighlightRenderer {
 
   // 批量渲染
   private batchSize = 50; // 每批渲染的划线数量
-  private currentBatch = 0;
 
   constructor(highlightSystem: HighlightSystem) {
     this.highlightSystem = highlightSystem;
@@ -47,8 +46,12 @@ export class VirtualHighlightRenderer {
     this.highlights = highlights;
     // 按位置排序划线（基于文本偏移量）
     this.sortedHighlights = [...highlights].sort(
-      (a, b) => a.position.textOffset - b.position.textOffset
+      (a, b) => this.getTextOffset(a) - this.getTextOffset(b)
     );
+  }
+
+  private getTextOffset(highlight: Highlight): number {
+    return highlight?.position?.start?.offset ?? 0;
   }
 
   /**
@@ -105,7 +108,7 @@ export class VirtualHighlightRenderer {
     const avgCharsPerLine = 50; // 平均每行字符数
 
     const estimatedLine = Math.floor(
-      highlight.position.textOffset / avgCharsPerLine
+      this.getTextOffset(highlight) / avgCharsPerLine
     );
     return estimatedLine * avgLineHeight;
   }
@@ -172,7 +175,6 @@ export class VirtualHighlightRenderer {
   ): void {
     if (highlights.length === 0) return;
 
-    this.currentBatch = 0;
     this.renderQueue.clear();
     highlights.forEach((h) => this.renderQueue.add(h.id));
 

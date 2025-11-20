@@ -3,8 +3,6 @@
  * 处理跨段落选区的划线渲染
  */
 
-import type { Highlight } from "./HighlightSystem";
-
 export class CrossParagraphHighlighter {
   /**
    * 检测 Range 是否跨段落

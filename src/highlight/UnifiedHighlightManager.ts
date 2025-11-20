@@ -3,11 +3,6 @@
  * 统一管理划线状态和DOM操作，解决状态管理与DOM操作冲突的问题
  */
 
-import type {
-  Highlight,
-  HighlightPosition,
-  HighlightNote,
-} from "./HighlightSystem";
 import type { StoredHighlight } from "../storage/StorageManager";
 import { HighlightSystem } from "./HighlightSystem";
 

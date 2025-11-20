@@ -25,8 +25,8 @@ export interface UseHighlighterReturn {
     highlightId: string,
     updates: Partial<StoredHighlight>
   ) => Promise<boolean>;
-  setContainer: (element: HTMLElement | null) => void;
-  contentRef: React.RefObject<HTMLDivElement>;
+  setContainer: (element: HTMLDivElement | null) => void;
+  contentRef: React.RefObject<HTMLDivElement | null>;
   manager: UnifiedHighlightManager;
 }
 
@@ -35,18 +35,14 @@ export function useHighlighter(
 ): UseHighlighterReturn {
   const { bookId, storageManager } = options;
   const [highlights, setHighlights] = useState<StoredHighlight[]>([]);
-  const managerRef = useRef<UnifiedHighlightManager | null>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
+  const managerRef = useRef<UnifiedHighlightManager>(new UnifiedHighlightManager());
+  const contentRef = useRef<HTMLDivElement | null>(null);
 
   // 初始化管理器
   useEffect(() => {
     if (!storageManager) {
       console.warn("⚠️ StorageManager 未初始化");
       return;
-    }
-
-    if (!managerRef.current) {
-      managerRef.current = new UnifiedHighlightManager();
     }
 
     const manager = managerRef.current;
@@ -77,11 +73,12 @@ export function useHighlighter(
   }, [bookId, storageManager]);
 
   // 容器ref回调
-  const setContainer = useCallback((element: HTMLElement | null) => {
+  const setContainer = useCallback((element: HTMLDivElement | null) => {
     if (element) {
       contentRef.current = element;
       managerRef.current?.setContainer(element);
     } else {
+      contentRef.current = null;
       managerRef.current?.setContainer(null);
     }
   }, []);
@@ -201,6 +198,6 @@ export function useHighlighter(
     updateHighlight,
     setContainer,
     contentRef,
-    manager: managerRef.current!,
+    manager: managerRef.current,
   };
 }

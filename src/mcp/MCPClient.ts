@@ -34,6 +34,15 @@ export interface ReadingAnalysis {
   knowledgeGraph: Array<{ source: string; target: string; weight: number }>;
 }
 
+const getFirstContentText = (result: unknown): string | undefined => {
+  const content = (result as { content?: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) {
+    return undefined;
+  }
+  const first = content[0] as { text?: string };
+  return typeof first?.text === "string" ? first.text : undefined;
+};
+
 export class MCPClient {
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
@@ -99,8 +108,9 @@ export class MCPClient {
         arguments: {},
       });
 
-      if (result.content && Array.isArray(result.content)) {
-        return result.content.map((item: Record<string, unknown>) => ({
+      const content = (result as { content?: unknown }).content;
+      if (Array.isArray(content)) {
+        return (content as Array<Record<string, unknown>>).map((item) => ({
           id: (item.id || item.bookId) as string,
           title: (item.title || item.name) as string,
           author: (item.author || "") as string,
@@ -135,8 +145,9 @@ export class MCPClient {
         },
       });
 
-      if (result.content && Array.isArray(result.content)) {
-        return result.content.map((item: Record<string, unknown>) => ({
+      const content = (result as { content?: unknown }).content;
+      if (Array.isArray(content)) {
+        return (content as Array<Record<string, unknown>>).map((item) => ({
           id: (item.id || item.bookId) as string,
           title: (item.title || item.name) as string,
           author: (item.author || "") as string,
@@ -167,8 +178,9 @@ export class MCPClient {
         },
       });
 
-      if (result.content && Array.isArray(result.content)) {
-        return result.content.map((item: Record<string, unknown>) => ({
+      const content = (result as { content?: unknown }).content;
+      if (Array.isArray(content)) {
+        return (content as Array<Record<string, unknown>>).map((item) => ({
           id: (item.id || item.noteId) as string,
           bookId,
           content: (item.content || item.text) as string,
@@ -206,7 +218,8 @@ export class MCPClient {
         },
       });
 
-      return result.content?.[0]?.text === "success" || false;
+      const text = getFirstContentText(result);
+      return text === "success";
     } catch (error) {
       console.error("Failed to sync notes:", error);
       return false;
@@ -229,8 +242,9 @@ export class MCPClient {
         },
       });
 
-      if (result.content && result.content[0]) {
-        const data = JSON.parse(result.content[0].text || "{}");
+      const text = getFirstContentText(result);
+      if (text) {
+        const data = JSON.parse(text || "{}");
         return {
           totalBooks: data.totalBooks || 0,
           totalNotes: data.totalNotes || notes.length,
@@ -296,8 +310,9 @@ export class MCPClient {
         },
       });
 
-      if (result.content && result.content[0]) {
-        const classification = JSON.parse(result.content[0].text || "{}");
+      const text = getFirstContentText(result);
+      if (text) {
+        const classification = JSON.parse(text || "{}");
         const classified = new Map<string, BookNote[]>();
 
         Object.entries(classification).forEach(

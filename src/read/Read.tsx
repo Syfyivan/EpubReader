@@ -38,7 +38,6 @@ export default function Read({
   const [chapterContent, setChapterContent] = useState<string>('');
   const [chapterRenderKey, setChapterRenderKey] = useState<number>(0); // 强制重新渲染的key
   const [highlights, setHighlights] = useState<Highlight[]>([]);
-  const [highlightChapterMap, setHighlightChapterMap] = useState<Map<string, string>>(new Map()); // 存储 highlightId -> chapterId 的映射
   const [bookMetadata, setBookMetadata] = useState<BookMetadata | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
   const [aiStreamingText, setAiStreamingText] = useState<string>('');
@@ -62,6 +61,8 @@ export default function Read({
   // 临时高亮覆盖层（使用绝对定位，不修改DOM结构）
   const tempHighlightOverlayRef = useRef<HTMLDivElement | null>(null);
   const tempHighlightRangeRef = useRef<Range | null>(null);
+  const selectionIntervalRef = useRef<number | null>(null);
+  const selectionRAFRef = useRef<number | null>(null);
   const isDraggingRef = useRef<boolean>(false); // 防止拖动时递归调用
 
   const contentRef = useRef<HTMLDivElement>(null);
@@ -107,6 +108,21 @@ export default function Read({
       tempHighlightOverlayRef.current = null;
     }
     tempHighlightRangeRef.current = null;
+  }, []);
+
+  const removeTemporaryHighlight = useCallback(() => {
+    clearTempHighlightOverlay();
+  }, [clearTempHighlightOverlay]);
+
+  const removeStickySelection = useCallback(() => {
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0) {
+      selection.removeAllRanges();
+    }
+    const focusElement = document.activeElement as HTMLElement | null;
+    if (focusElement) {
+      focusElement.classList?.remove("sticky-selection");
+    }
   }, []);
 
   // 辅助函数：根据坐标查找文本节点和偏移量
@@ -335,34 +351,6 @@ export default function Read({
         let isDragging = false;
         let dragHandle: 'start' | 'end' | null = null;
         
-        // 更新手柄位置的函数
-        const updateHandlePositions = () => {
-          if (!tempHighlightRangeRef.current || !container) return;
-          
-          try {
-            const savedRange = tempHighlightRangeRef.current;
-            const newRects = Array.from(savedRange.getClientRects());
-            
-            if (newRects.length === 0) return;
-            
-            const newContainerRect = container.getBoundingClientRect();
-            const firstRect = newRects[0];
-            const lastRect = newRects[newRects.length - 1];
-            
-            const startTop = firstRect.top - newContainerRect.top + container.scrollTop;
-            const startLeft = firstRect.left - newContainerRect.left + container.scrollLeft;
-            startHandle.style.top = `${startTop + firstRect.height / 2}px`;
-            startHandle.style.left = `${startLeft}px`;
-            
-            const endTop = lastRect.top - newContainerRect.top + container.scrollTop;
-            const endLeft = lastRect.right - newContainerRect.left + container.scrollLeft;
-            endHandle.style.top = `${endTop + lastRect.height / 2}px`;
-            endHandle.style.left = `${endLeft}px`;
-          } catch (e) {
-            console.warn('⚠️ 更新手柄位置失败:', e);
-          }
-        };
-        
         // 鼠标按下事件
         const handleMouseDown = (e: MouseEvent) => {
           const target = e.target as HTMLElement;
@@ -399,59 +387,55 @@ export default function Read({
           
           if (rafId) return; // 节流：如果已经有待处理的帧，跳过
           
-          rafId = requestAnimationFrame(() => {
+        rafId = requestAnimationFrame(() => {
             rafId = null;
-            
             try {
-              // 使用浏览器原生 API 获取光标位置
-              let newRange: Range | null = null;
-              
-              if (document.caretRangeFromPoint) {
-                const caretRange = document.caretRangeFromPoint(e.clientX, e.clientY);
-                if (caretRange) {
-                  newRange = document.createRange();
-                  const savedRange = tempHighlightRangeRef.current;
-                  
-                  if (dragHandle === 'start') {
-                    newRange.setStart(caretRange.startContainer, caretRange.startOffset);
-                    newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
-                  } else {
-                    newRange.setStart(savedRange.startContainer, savedRange.startOffset);
-                    newRange.setEnd(caretRange.endContainer, caretRange.endOffset);
-                  }
-                }
-              } else if ((document as any).caretPositionFromPoint) {
-                const caretPos = (document as any).caretPositionFromPoint(e.clientX, e.clientY);
-                if (caretPos && caretPos.offsetNode) {
-                  newRange = document.createRange();
-                  const savedRange = tempHighlightRangeRef.current;
-                  
-                  if (dragHandle === 'start') {
-                    newRange.setStart(caretPos.offsetNode, caretPos.offset);
-                    newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
-                  } else {
-                    newRange.setStart(savedRange.startContainer, savedRange.startOffset);
-                    newRange.setEnd(caretPos.offsetNode, caretPos.offset);
-                  }
+            const savedRange = tempHighlightRangeRef.current;
+            if (!savedRange) return;
+
+            // 使用浏览器原生 API 获取光标位置
+            let newRange: Range | null = null;
+
+            if (document.caretRangeFromPoint) {
+              const caretRange = document.caretRangeFromPoint(e.clientX, e.clientY);
+              if (caretRange) {
+                newRange = document.createRange();
+                if (dragHandle === 'start') {
+                  newRange.setStart(caretRange.startContainer, caretRange.startOffset);
+                  newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
+                } else {
+                  newRange.setStart(savedRange.startContainer, savedRange.startOffset);
+                  newRange.setEnd(caretRange.endContainer, caretRange.endOffset);
                 }
               }
-              
-              // 降级方案：使用辅助函数
-              if (!newRange) {
-                const textNodeInfo = findTextNodeAtPoint(container, e.clientX, e.clientY);
-                if (textNodeInfo) {
-                  newRange = document.createRange();
-                  const savedRange = tempHighlightRangeRef.current;
-                  
-                  if (dragHandle === 'start') {
-                    newRange.setStart(textNodeInfo.node, textNodeInfo.offset);
-                    newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
-                  } else {
-                    newRange.setStart(savedRange.startContainer, savedRange.startOffset);
-                    newRange.setEnd(textNodeInfo.node, textNodeInfo.offset);
-                  }
+            } else if ((document as any).caretPositionFromPoint) {
+              const caretPos = (document as any).caretPositionFromPoint(e.clientX, e.clientY);
+              if (caretPos && caretPos.offsetNode) {
+                newRange = document.createRange();
+                if (dragHandle === 'start') {
+                  newRange.setStart(caretPos.offsetNode, caretPos.offset);
+                  newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
+                } else {
+                  newRange.setStart(savedRange.startContainer, savedRange.startOffset);
+                  newRange.setEnd(caretPos.offsetNode, caretPos.offset);
                 }
               }
+            }
+
+            // 降级方案：使用辅助函数
+            if (!newRange) {
+              const textNodeInfo = findTextNodeAtPoint(container, e.clientX, e.clientY);
+              if (textNodeInfo) {
+                newRange = document.createRange();
+                if (dragHandle === 'start') {
+                  newRange.setStart(textNodeInfo.node, textNodeInfo.offset);
+                  newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
+                } else {
+                  newRange.setStart(savedRange.startContainer, savedRange.startOffset);
+                  newRange.setEnd(textNodeInfo.node, textNodeInfo.offset);
+                }
+              }
+            }
               
               if (!newRange || newRange.collapsed) return;
               
@@ -1315,15 +1299,6 @@ export default function Read({
           setHighlights(savedHighlights);
         }
 
-        // 创建 highlightId -> chapterId 的映射
-        const chapterMap = new Map<string, string>();
-        (savedHighlights || []).forEach((h) => {
-          const stored = h as StoredHighlight;
-          if (stored.chapterId) {
-            chapterMap.set(h.id, stored.chapterId);
-          }
-        });
-        setHighlightChapterMap(chapterMap);
       } catch (error) {
         console.error('Failed to initialize:', error);
       } finally {
@@ -1633,13 +1608,6 @@ export default function Read({
         return newHighlights;
       });
       
-      // 更新章节映射
-      setHighlightChapterMap((prev) => {
-        const newMap = new Map(prev);
-        newMap.set(highlight.id, currentChapter.id);
-        return newMap;
-      });
-
       // 创建新划线后，立即恢复所有划线（包括新创建的和已存在的）
       // 使用 requestAnimationFrame 确保在 DOM 更新后执行
       requestAnimationFrame(() => {
@@ -1776,11 +1744,6 @@ export default function Read({
       const next = [...prev];
       next[idx] = storedHighlight;
       return next;
-    });
-    setHighlightChapterMap((prev) => {
-      const newMap = new Map(prev);
-      newMap.set(highlight.id, currentChapter.id);
-      return newMap;
     });
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -1930,40 +1893,6 @@ export default function Read({
       });
     });
   }, [noteManagerHighlightId, restoreAllHighlights]);
-
-  // 处理点击已有划线，打开笔记管理
-  const handleHighlightClick = useCallback((e: React.MouseEvent, highlightId: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    const highlight = highlightSystemRef.current?.highlights.get(highlightId) as StoredHighlight | undefined;
-    if (!highlight) return;
-    
-    // 计算 tooltip 位置
-    const highlightEl = contentRef.current?.querySelector(`span.epub-highlight[data-highlight-id="${highlightId}"]`);
-    if (highlightEl) {
-      const rect = highlightEl.getBoundingClientRect();
-      const scrollContainer = scrollContainerRef.current || contentRef.current?.parentElement;
-      if (scrollContainer) {
-        const containerRect = scrollContainer.getBoundingClientRect();
-        setManageTooltipPos({
-          x: (rect.left - containerRect.left) + (rect.width / 2),
-          y: (rect.top - containerRect.top) - 10,
-        });
-      }
-    }
-    
-    setManageHighlightId(highlightId);
-    setShowManageTooltip(true);
-  }, []);
-
-  // 打开笔记管理对话框（从管理 tooltip）
-  const handleOpenNoteManager = useCallback(() => {
-    if (!manageHighlightId) return;
-    setNoteManagerHighlightId(manageHighlightId);
-    setShowNoteManager(true);
-    setShowManageTooltip(false);
-  }, [manageHighlightId]);
 
   // 旧的 handleAddNote 函数需要更新，但先保留原有逻辑作为备用
 
