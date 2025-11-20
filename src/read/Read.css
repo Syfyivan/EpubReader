@@ -353,6 +353,17 @@
   overflow-wrap: break-word;
 }
 
+/* 自定义文本选中样式 - 让选中的文本更醒目 */
+.chapter-content ::selection {
+  background-color: rgba(59, 130, 246, 0.3);
+  color: inherit;
+}
+
+.chapter-content ::-moz-selection {
+  background-color: rgba(59, 130, 246, 0.3);
+  color: inherit;
+}
+
 .chapter-content p {
   margin-bottom: 1.5rem;
   text-align: justify;

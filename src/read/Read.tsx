@@ -1342,59 +1342,13 @@ export default function Read({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file, bookId]); // 移除 loadChapter 依赖，避免无限循环
 
-  // 获取 Range 第一行的位置信息
-  const getFirstLineRect = (range: Range): DOMRect | null => {
-    try {
-      // 创建 Range 的副本
-      const firstLineRange = range.cloneRange();
-      
-      // 获取第一个文本节点
-      let node = range.startContainer;
-      if (node.nodeType !== Node.TEXT_NODE) {
-        // 如果是元素节点，查找第一个文本节点
-        const walker = document.createTreeWalker(
-          node,
-          NodeFilter.SHOW_TEXT,
-          null
-        );
-        const textNode = walker.nextNode();
-        if (!textNode) return null;
-        node = textNode;
-      }
-      
-      // 设置范围从开始位置到第一行结束
-      firstLineRange.setStart(node, range.startOffset);
-      
-      // 尝试找到第一行的结束位置
-      // 通过检查字符位置和换行符来确定
-      const textNode = node as Text;
-      const text = textNode.textContent || '';
-      const startOffset = range.startOffset;
-      
-      // 查找第一个换行符或段落边界
-      let endOffset = text.indexOf('\n', startOffset);
-      if (endOffset === -1) {
-        // 如果没有换行符，检查是否到达节点末尾
-        endOffset = text.length;
-      }
-      
-      // 如果第一行超出了当前节点，需要扩展到下一个节点
-      if (endOffset > textNode.length) {
-        endOffset = textNode.length;
-      }
-      
-      firstLineRange.setEnd(node, Math.min(endOffset, textNode.length));
-      
-      // 获取第一行的边界框
-      return firstLineRange.getBoundingClientRect();
-    } catch (error) {
-      console.warn('⚠️ 获取第一行位置失败:', error);
-      return null;
-    }
-  };
+  // 已不再需要第一行定位的辅助方法（保留位置以便后续扩展）
 
   // 处理文本选择，显示划线提示框
-  const handleTextSelection = useCallback(() => {
+  const handleTextSelection = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) {
       setShowHighlightTooltip(false);
@@ -1695,11 +1649,25 @@ export default function Read({
         });
       });
 
+      // 清理定时器和 RAF（划线已创建，不再需要保持选中状态）
+      if (selectionIntervalRef.current) {
+        clearInterval(selectionIntervalRef.current);
+        selectionIntervalRef.current = null;
+      }
+      if (selectionRAFRef.current) {
+        cancelAnimationFrame(selectionRAFRef.current);
+        selectionRAFRef.current = null;
+      }
+      
       // 清除选择和提示框
       selection.removeAllRanges();
       clearTempHighlightOverlay();
       setShowHighlightTooltip(false);
       selectedRangeDataRef.current = null;
+      // 移除粘性选择
+      removeStickySelection();
+      // 移除临时高亮
+      removeTemporaryHighlight();
     }
   }, [currentChapter, bookId, restoreAllHighlights, clearTempHighlightOverlay]);
 
@@ -2043,6 +2011,15 @@ export default function Read({
       if (showHighlightTooltip) {
         const target = e.target as HTMLElement;
         if (!target.closest('.highlight-tooltip') && !target.closest('.epub-highlight')) {
+          // 清理定时器和 RAF
+          if (selectionIntervalRef.current) {
+            clearInterval(selectionIntervalRef.current);
+            selectionIntervalRef.current = null;
+          }
+          if (selectionRAFRef.current) {
+            cancelAnimationFrame(selectionRAFRef.current);
+            selectionRAFRef.current = null;
+          }
           setShowHighlightTooltip(false);
           selectedRangeDataRef.current = null;
           window.getSelection()?.removeAllRanges();
