@@ -82,6 +82,35 @@
   color: inherit;
 }
 
+/* 可拖动的选择手柄样式 */
+.selection-handle {
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  touch-action: none;
+}
+
+.selection-handle-start:hover {
+  transform: translate(-50%, -50%) scale(1.2) !important;
+  background: rgba(59, 130, 246, 1) !important;
+}
+
+.selection-handle-end:hover {
+  transform: translate(50%, -50%) scale(1.2) !important;
+  background: rgba(59, 130, 246, 1) !important;
+}
+
+.selection-handle-start:active {
+  transform: translate(-50%, -50%) scale(1.1) !important;
+  background: rgba(37, 99, 235, 1) !important;
+}
+
+.selection-handle-end:active {
+  transform: translate(50%, -50%) scale(1.1) !important;
+  background: rgba(37, 99, 235, 1) !important;
+}
+
 /* 侧边栏样式 */
 .read-sidebar {
   width: 280px;

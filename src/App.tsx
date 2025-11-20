@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Read from "./read/Read";
 import "./App.css";
+import ErrorBoundary from "./ErrorBoundary";
 import LibraryView from "./library/LibraryView";
 import {
   StorageManager,
@@ -319,15 +320,17 @@ function App() {
 
   if (view === "reader" && file && bookId) {
     return (
-      <Read
-        file={file}
-        bookId={bookId}
-        storageManager={storageRef.current ?? undefined}
-        onExit={handleReaderExit}
-        onMetadataChange={handleBookMetadataUpdate}
-        initialChapterId={initialChapterId}
-        initialScrollTop={initialScrollTop}
-      />
+      <ErrorBoundary>
+        <Read
+          file={file}
+          bookId={bookId}
+          storageManager={storageRef.current ?? undefined}
+          onExit={handleReaderExit}
+          onMetadataChange={handleBookMetadataUpdate}
+          initialChapterId={initialChapterId}
+          initialScrollTop={initialScrollTop}
+        />
+      </ErrorBoundary>
     );
   }
 

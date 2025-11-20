@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import type { HighlightNote } from '../highlight/HighlightSystem';
 import './NoteManager.css';
 
@@ -29,6 +29,18 @@ export function NoteManager({
   const [tagInput, setTagInput] = useState('');
   const [newNoteTags, setNewNoteTags] = useState<string[]>([]);
   const [perNoteTagInput, setPerNoteTagInput] = useState<Record<string, string>>({});
+  const newNoteTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const editNoteTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    newNoteTextareaRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (editingId) {
+      editNoteTextareaRef.current?.focus();
+    }
+  }, [editingId]);
 
   const suggestions = useMemo(() => {
     const q = tagInput.trim().toLowerCase();
@@ -132,10 +144,17 @@ export function NoteManager({
           {/* 新增笔记 */}
           <div className="add-note-section">
             <textarea
+              ref={newNoteTextareaRef}
               className="new-note-input"
-              placeholder="输入新笔记..."
+              placeholder="输入新笔记 (Ctrl+Enter 保存)..."
               value={newNoteContent}
               onChange={(e) => setNewNoteContent(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  handleAddNote();
+                }
+              }}
               rows={3}
             />
 
@@ -232,9 +251,16 @@ export function NoteManager({
                         >
                           {isEditing ? (
                             <textarea
+                              ref={editNoteTextareaRef}
                               className="note-edit-input"
                               value={editingContent}
                               onChange={(e) => setEditingContent(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                                  e.preventDefault();
+                                  handleSaveEdit();
+                                }
+                              }}
                               autoFocus
                               rows={3}
                             />
@@ -321,4 +347,7 @@ export function NoteManager({
     </div>
   );
 }
+
+
+
 

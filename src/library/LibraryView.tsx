@@ -605,7 +605,7 @@ const LibraryView: React.FC<LibraryViewProps> = ({
         accept=".json,.txt,.md"
         className="hidden-file-input"
         onChange={handleFileSelected}
-        aria-label="导入微信读书文件"
+      aria-label="导入微信读书文件"
       />
 
       {showTagCenter && (

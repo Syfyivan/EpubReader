@@ -62,6 +62,7 @@ export default function Read({
   // 临时高亮覆盖层（使用绝对定位，不修改DOM结构）
   const tempHighlightOverlayRef = useRef<HTMLDivElement | null>(null);
   const tempHighlightRangeRef = useRef<Range | null>(null);
+  const isDraggingRef = useRef<boolean>(false); // 防止拖动时递归调用
 
   const contentRef = useRef<HTMLDivElement>(null);
   const highlightSystemRef = useRef<HighlightSystem | null>(null);
@@ -108,10 +109,78 @@ export default function Read({
     tempHighlightRangeRef.current = null;
   }, []);
 
+  // 辅助函数：根据坐标查找文本节点和偏移量
+  const findTextNodeAtPoint = useCallback((container: HTMLElement, x: number, y: number): { node: Text; offset: number } | null => {
+    // 优先使用浏览器原生 API
+    if (document.caretRangeFromPoint) {
+      try {
+        const range = document.caretRangeFromPoint(x, y);
+        if (range) {
+          const node = range.startContainer;
+          if (node.nodeType === Node.TEXT_NODE && container.contains(node)) {
+            return { node: node as Text, offset: range.startOffset };
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ caretRangeFromPoint 失败:', e);
+      }
+    } else if ((document as any).caretPositionFromPoint) {
+      // Firefox 旧版本
+      try {
+        const caretPos = (document as any).caretPositionFromPoint(x, y);
+        if (caretPos && caretPos.offsetNode) {
+          const node = caretPos.offsetNode;
+          if (node.nodeType === Node.TEXT_NODE && container.contains(node)) {
+            return { node: node as Text, offset: caretPos.offset };
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ caretPositionFromPoint 失败:', e);
+      }
+    }
+    
+    // 降级方案：遍历文本节点查找
+    const walker = document.createTreeWalker(
+      container,
+      NodeFilter.SHOW_TEXT,
+      null
+    );
+    
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      const textNode = node as Text;
+      const range = document.createRange();
+      try {
+        range.selectNodeContents(textNode);
+        const rects = range.getClientRects();
+        
+        for (const rect of Array.from(rects)) {
+          if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+            // 计算偏移量
+            const text = textNode.textContent || '';
+            if (text.length === 0) continue;
+            const charWidth = rect.width / text.length;
+            const offset = Math.round((x - rect.left) / charWidth);
+            return { 
+              node: textNode, 
+              offset: Math.max(0, Math.min(offset, text.length)) 
+            };
+          }
+        }
+      } catch (e) {
+        // 忽略错误，继续查找
+      }
+    }
+    
+    return null;
+  }, []);
+
   // 创建临时高亮覆盖层（使用绝对定位，不修改DOM结构）
-  const createTempHighlightOverlay = useCallback((range: Range) => {
-    // 先清除之前的覆盖层
-    clearTempHighlightOverlay();
+  const createTempHighlightOverlay = useCallback((range: Range, skipClear = false) => {
+    // 如果正在拖动，不清除覆盖层，只更新内容
+    if (!skipClear && !isDraggingRef.current) {
+      clearTempHighlightOverlay();
+    }
 
     try {
       // 验证 range 是否仍然有效
@@ -149,7 +218,7 @@ export default function Read({
       const overlay = document.createElement('div');
       overlay.className = 'temp-highlight-overlay';
       overlay.style.position = 'absolute';
-      overlay.style.pointerEvents = 'none'; // 不阻止点击
+      overlay.style.pointerEvents = 'none'; // 默认不接收事件，让文本可以选中
       overlay.style.zIndex = '10'; // 确保在文本上方，但在 tooltip (z-index: 1000) 下方
       overlay.style.top = '0';
       overlay.style.left = '0';
@@ -171,7 +240,7 @@ export default function Read({
         // 使用下划线效果：在文本矩形底部画2px高的横条
         highlightDiv.style.backgroundColor = '#3b82f6';
         highlightDiv.style.borderRadius = '1px';
-        highlightDiv.style.pointerEvents = 'none';
+        highlightDiv.style.pointerEvents = 'none'; // 下划线不接收事件，让文本可以选中
         highlightDiv.style.zIndex = '10';
         
         // 计算相对于容器的位置
@@ -188,6 +257,310 @@ export default function Read({
         overlay.appendChild(highlightDiv);
       });
 
+      // ========== 创建可拖动的选择手柄 ==========
+      const rectsArray = Array.from(rects);
+      if (rectsArray.length > 0) {
+        // 起始手柄：第一个矩形的左边缘
+        const startHandle = document.createElement('div');
+        startHandle.className = 'selection-handle selection-handle-start';
+        startHandle.style.position = 'absolute';
+        startHandle.style.width = '20px';
+        startHandle.style.height = '24px';
+        startHandle.style.cursor = 'ew-resize';
+        startHandle.style.pointerEvents = 'auto';
+        startHandle.style.zIndex = '20';
+        startHandle.style.background = 'rgba(59, 130, 246, 0.9)';
+        startHandle.style.border = '2px solid #3b82f6';
+        startHandle.style.borderRadius = '50%';
+        startHandle.style.transform = 'translate(-50%, -50%)';
+        startHandle.style.display = 'flex';
+        startHandle.style.alignItems = 'center';
+        startHandle.style.justifyContent = 'center';
+        startHandle.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.2)';
+        startHandle.style.transition = 'transform 0.1s ease, background-color 0.1s ease';
+        
+        // 添加视觉指示器
+        const startIndicator = document.createElement('div');
+        startIndicator.style.width = '8px';
+        startIndicator.style.height = '8px';
+        startIndicator.style.background = 'white';
+        startIndicator.style.borderRadius = '50%';
+        startHandle.appendChild(startIndicator);
+        
+        // 结束手柄：最后一个矩形的右边缘
+        const endHandle = document.createElement('div');
+        endHandle.className = 'selection-handle selection-handle-end';
+        endHandle.style.position = 'absolute';
+        endHandle.style.width = '20px';
+        endHandle.style.height = '24px';
+        endHandle.style.cursor = 'ew-resize';
+        endHandle.style.pointerEvents = 'auto'; // 手柄必须接收事件，即使父元素是 none
+        endHandle.style.zIndex = '20';
+        endHandle.style.touchAction = 'none'; // 防止移动端触摸滚动
+        endHandle.style.background = 'rgba(59, 130, 246, 0.9)';
+        endHandle.style.border = '2px solid #3b82f6';
+        endHandle.style.borderRadius = '50%';
+        endHandle.style.transform = 'translate(50%, -50%)';
+        endHandle.style.display = 'flex';
+        endHandle.style.alignItems = 'center';
+        endHandle.style.justifyContent = 'center';
+        endHandle.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.2)';
+        endHandle.style.transition = 'transform 0.1s ease, background-color 0.1s ease';
+        
+        const endIndicator = document.createElement('div');
+        endIndicator.style.width = '8px';
+        endIndicator.style.height = '8px';
+        endIndicator.style.background = 'white';
+        endIndicator.style.borderRadius = '50%';
+        endHandle.appendChild(endIndicator);
+        
+        // 计算手柄位置
+        const firstRect = rectsArray[0];
+        const lastRect = rectsArray[rectsArray.length - 1];
+        
+        const startTop = firstRect.top - containerRect.top + container.scrollTop;
+        const startLeft = firstRect.left - containerRect.left + container.scrollLeft;
+        startHandle.style.top = `${startTop + firstRect.height / 2}px`;
+        startHandle.style.left = `${startLeft}px`;
+        
+        const endTop = lastRect.top - containerRect.top + container.scrollTop;
+        const endLeft = lastRect.right - containerRect.left + container.scrollLeft;
+        endHandle.style.top = `${endTop + lastRect.height / 2}px`;
+        endHandle.style.left = `${endLeft}px`;
+        
+        overlay.appendChild(startHandle);
+        overlay.appendChild(endHandle);
+        
+        // ========== 拖动逻辑 ==========
+        let isDragging = false;
+        let dragHandle: 'start' | 'end' | null = null;
+        
+        // 更新手柄位置的函数
+        const updateHandlePositions = () => {
+          if (!tempHighlightRangeRef.current || !container) return;
+          
+          try {
+            const savedRange = tempHighlightRangeRef.current;
+            const newRects = Array.from(savedRange.getClientRects());
+            
+            if (newRects.length === 0) return;
+            
+            const newContainerRect = container.getBoundingClientRect();
+            const firstRect = newRects[0];
+            const lastRect = newRects[newRects.length - 1];
+            
+            const startTop = firstRect.top - newContainerRect.top + container.scrollTop;
+            const startLeft = firstRect.left - newContainerRect.left + container.scrollLeft;
+            startHandle.style.top = `${startTop + firstRect.height / 2}px`;
+            startHandle.style.left = `${startLeft}px`;
+            
+            const endTop = lastRect.top - newContainerRect.top + container.scrollTop;
+            const endLeft = lastRect.right - newContainerRect.left + container.scrollLeft;
+            endHandle.style.top = `${endTop + lastRect.height / 2}px`;
+            endHandle.style.left = `${endLeft}px`;
+          } catch (e) {
+            console.warn('⚠️ 更新手柄位置失败:', e);
+          }
+        };
+        
+        // 鼠标按下事件
+        const handleMouseDown = (e: MouseEvent) => {
+          const target = e.target as HTMLElement;
+          
+          if (target.classList.contains('selection-handle-start') || 
+              target.closest('.selection-handle-start')) {
+            isDragging = true;
+            dragHandle = 'start';
+            e.preventDefault();
+            e.stopPropagation();
+            document.body.style.cursor = 'ew-resize';
+            document.body.style.userSelect = 'none';
+          } else if (target.classList.contains('selection-handle-end') || 
+                     target.closest('.selection-handle-end')) {
+            isDragging = true;
+            dragHandle = 'end';
+            e.preventDefault();
+            e.stopPropagation();
+            document.body.style.cursor = 'ew-resize';
+            document.body.style.userSelect = 'none';
+          }
+        };
+        
+        // 鼠标移动事件（使用 requestAnimationFrame 节流）
+        let rafId: number | null = null;
+        const handleMouseMove = (e: MouseEvent) => {
+          if (!isDragging || !dragHandle || !tempHighlightRangeRef.current || !container) {
+            if (rafId) {
+              cancelAnimationFrame(rafId);
+              rafId = null;
+            }
+            return;
+          }
+          
+          if (rafId) return; // 节流：如果已经有待处理的帧，跳过
+          
+          rafId = requestAnimationFrame(() => {
+            rafId = null;
+            
+            try {
+              // 使用浏览器原生 API 获取光标位置
+              let newRange: Range | null = null;
+              
+              if (document.caretRangeFromPoint) {
+                const caretRange = document.caretRangeFromPoint(e.clientX, e.clientY);
+                if (caretRange) {
+                  newRange = document.createRange();
+                  const savedRange = tempHighlightRangeRef.current;
+                  
+                  if (dragHandle === 'start') {
+                    newRange.setStart(caretRange.startContainer, caretRange.startOffset);
+                    newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
+                  } else {
+                    newRange.setStart(savedRange.startContainer, savedRange.startOffset);
+                    newRange.setEnd(caretRange.endContainer, caretRange.endOffset);
+                  }
+                }
+              } else if ((document as any).caretPositionFromPoint) {
+                const caretPos = (document as any).caretPositionFromPoint(e.clientX, e.clientY);
+                if (caretPos && caretPos.offsetNode) {
+                  newRange = document.createRange();
+                  const savedRange = tempHighlightRangeRef.current;
+                  
+                  if (dragHandle === 'start') {
+                    newRange.setStart(caretPos.offsetNode, caretPos.offset);
+                    newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
+                  } else {
+                    newRange.setStart(savedRange.startContainer, savedRange.startOffset);
+                    newRange.setEnd(caretPos.offsetNode, caretPos.offset);
+                  }
+                }
+              }
+              
+              // 降级方案：使用辅助函数
+              if (!newRange) {
+                const textNodeInfo = findTextNodeAtPoint(container, e.clientX, e.clientY);
+                if (textNodeInfo) {
+                  newRange = document.createRange();
+                  const savedRange = tempHighlightRangeRef.current;
+                  
+                  if (dragHandle === 'start') {
+                    newRange.setStart(textNodeInfo.node, textNodeInfo.offset);
+                    newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
+                  } else {
+                    newRange.setStart(savedRange.startContainer, savedRange.startOffset);
+                    newRange.setEnd(textNodeInfo.node, textNodeInfo.offset);
+                  }
+                }
+              }
+              
+              if (!newRange || newRange.collapsed) return;
+              
+              // 确保 start 不在 end 之后
+              if (newRange.compareBoundaryPoints(Range.START_TO_END, newRange) > 0) {
+                // 如果 start 在 end 之后，交换它们
+                const tempContainer = newRange.startContainer;
+                const tempOffset = newRange.startOffset;
+                newRange.setStart(newRange.endContainer, newRange.endOffset);
+                newRange.setEnd(tempContainer, tempOffset);
+              }
+              
+              // 更新 Range
+              tempHighlightRangeRef.current = newRange.cloneRange();
+              
+              // 更新临时高亮的视觉元素（不重新创建整个覆盖层）
+              if (tempHighlightOverlayRef.current && container) {
+                const newRects = Array.from(newRange.getClientRects());
+                const containerRect = container.getBoundingClientRect();
+                const highlightItems = tempHighlightOverlayRef.current.querySelectorAll('.temp-highlight-item');
+                const underlineHeight = 2;
+                
+                // 更新下划线
+                newRects.forEach((rect, index) => {
+                  const item = highlightItems[index] as HTMLElement;
+                  if (item) {
+                    const top = rect.top - containerRect.top + container.scrollTop + rect.height - underlineHeight;
+                    const left = rect.left - containerRect.left + container.scrollLeft;
+                    item.style.top = `${top}px`;
+                    item.style.left = `${left}px`;
+                    item.style.width = `${rect.width}px`;
+                    item.style.height = `${underlineHeight}px`;
+                  }
+                });
+                
+                // 更新手柄位置
+                const startHandle = tempHighlightOverlayRef.current.querySelector('.selection-handle-start') as HTMLElement;
+                const endHandle = tempHighlightOverlayRef.current.querySelector('.selection-handle-end') as HTMLElement;
+                
+                if (startHandle && endHandle && newRects.length > 0) {
+                  const firstRect = newRects[0];
+                  const lastRect = newRects[newRects.length - 1];
+                  
+                  const startTop = firstRect.top - containerRect.top + container.scrollTop;
+                  const startLeft = firstRect.left - containerRect.left + container.scrollLeft;
+                  startHandle.style.top = `${startTop + firstRect.height / 2}px`;
+                  startHandle.style.left = `${startLeft}px`;
+                  
+                  const endTop = lastRect.top - containerRect.top + container.scrollTop;
+                  const endLeft = lastRect.right - containerRect.left + container.scrollLeft;
+                  endHandle.style.top = `${endTop + lastRect.height / 2}px`;
+                  endHandle.style.left = `${endLeft}px`;
+                }
+              }
+              
+              // 更新工具提示位置
+              const scrollContainer = scrollContainerRef.current || container.parentElement;
+              if (scrollContainer) {
+                const pos = SmartTooltipPositioner.calculatePosition(newRange, scrollContainer as HTMLElement);
+                setTooltipPosition(pos);
+              }
+              
+              // 更新保存的 rangeData
+              if (selectedRangeDataRef.current && highlightSystemRef.current) {
+                const newPosition = highlightSystemRef.current.serializeRange(newRange, container);
+                if (newPosition) {
+                  selectedRangeDataRef.current = {
+                    range: newRange.cloneRange(),
+                    position: newPosition,
+                    text: newRange.toString(),
+                  };
+                }
+              }
+            } catch (error) {
+              console.error('❌ 拖动更新失败:', error);
+            }
+          });
+        };
+        
+        // 鼠标释放事件
+        const handleMouseUp = () => {
+          if (isDragging) {
+            isDragging = false;
+            dragHandle = null;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+          }
+        };
+        
+        // 添加事件监听器
+        overlay.addEventListener('mousedown', handleMouseDown);
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+        
+        // 在清理函数中移除事件监听器
+        const originalCleanup = (overlay as HTMLElement & { _cleanup?: () => void })._cleanup;
+        (overlay as HTMLElement & { _cleanup?: () => void })._cleanup = () => {
+          document.removeEventListener('mousemove', handleMouseMove);
+          document.removeEventListener('mouseup', handleMouseUp);
+          if (rafId) {
+            cancelAnimationFrame(rafId);
+            rafId = null;
+          }
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+          if (originalCleanup) originalCleanup();
+        };
+      }
+      
       // 将覆盖层添加到容器
       if (container.style.position !== 'relative' && container.style.position !== 'absolute' && container.style.position !== 'fixed') {
         container.style.position = 'relative'; // 确保容器是定位上下文
@@ -240,6 +613,25 @@ export default function Read({
             item.style.height = `${underlineHeight}px`;
           }
         });
+        
+        // 更新手柄位置
+        const startHandle = tempHighlightOverlayRef.current.querySelector('.selection-handle-start') as HTMLElement;
+        const endHandle = tempHighlightOverlayRef.current.querySelector('.selection-handle-end') as HTMLElement;
+        
+        if (startHandle && endHandle && newRects.length > 0) {
+          const firstRect = newRects[0];
+          const lastRect = newRects[newRects.length - 1];
+          
+          const startTop = firstRect.top - newContainerRect.top + container.scrollTop;
+          const startLeft = firstRect.left - newContainerRect.left + container.scrollLeft;
+          startHandle.style.top = `${startTop + firstRect.height / 2}px`;
+          startHandle.style.left = `${startLeft}px`;
+          
+          const endTop = lastRect.top - newContainerRect.top + container.scrollTop;
+          const endLeft = lastRect.right - newContainerRect.left + container.scrollLeft;
+          endHandle.style.top = `${endTop + lastRect.height / 2}px`;
+          endHandle.style.left = `${endLeft}px`;
+        }
       };
 
       // 添加滚动监听
@@ -259,11 +651,12 @@ export default function Read({
 
       // 立即确保覆盖层可见，避免闪烁
       overlay.style.visibility = 'visible';
-      console.log('✅ 创建临时高亮覆盖层，矩形数量:', rects.length);
+      overlay.style.opacity = '1'; // 确保不透明
+      console.log('✅ 创建临时高亮覆盖层，矩形数量:', rects.length, '手柄数量:', rectsArray.length > 0 ? 2 : 0);
     } catch (error) {
       console.error('❌ 创建临时高亮覆盖层失败:', error);
     }
-  }, [clearTempHighlightOverlay]);
+  }, [clearTempHighlightOverlay, findTextNodeAtPoint]);
 
   const loadChapter = useCallback(async (chapterId: string, epubParser?: EpubParser) => {
     const parserToUse = epubParser || parser;
@@ -274,9 +667,12 @@ export default function Read({
 
     console.log('🔄 Loading chapter:', chapterId);
     
-    // 清除临时高亮和选中状态
-    clearTempHighlightOverlay();
-    setShowHighlightTooltip(false);
+    // 注意：不要在这里清除临时高亮，因为用户可能正在选择文本
+    // 只有在切换章节时才清除
+    if (chapterId !== currentChapter?.id) {
+      clearTempHighlightOverlay();
+      setShowHighlightTooltip(false);
+    }
     selectedRangeDataRef.current = null;
     
     setLoading(true);
@@ -424,7 +820,7 @@ export default function Read({
         console.log('Loading set to false');
       }, 50);
     }
-  }, [parser, chapterRenderKey, clearTempHighlightOverlay, bookId, onMetadataChange]);
+  }, [parser, chapterRenderKey, clearTempHighlightOverlay, bookId, onMetadataChange, currentChapter]);
 
   // 恢复划线的函数（提取出来，供多个地方使用）
   const restoreAllHighlights = useCallback(() => {
@@ -1083,7 +1479,18 @@ export default function Read({
       // 使用双重 rAF 确保 DOM 布局稳定后再计算矩形，避免首次不显示
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
+          console.log('🎨 准备创建临时高亮覆盖层，range:', range.toString().substring(0, 30));
           createTempHighlightOverlay(range);
+          
+          // 验证覆盖层是否创建成功
+          setTimeout(() => {
+            if (tempHighlightOverlayRef.current && document.contains(tempHighlightOverlayRef.current)) {
+              const handles = tempHighlightOverlayRef.current.querySelectorAll('.selection-handle');
+              console.log('✅ 临时高亮覆盖层已创建，手柄数量:', handles.length);
+            } else {
+              console.warn('⚠️ 临时高亮覆盖层创建失败或已被清除');
+            }
+          }, 100);
         });
       });
       
@@ -1091,7 +1498,7 @@ export default function Read({
       setTimeout(() => {
         window.getSelection()?.removeAllRanges();
         console.log('🧹 已清除浏览器选择，临时高亮应该已显示');
-      }, 80);
+      }, 150); // 增加延迟，确保覆盖层完全创建
     } catch (error) {
       console.error('❌ 保存选中范围时出错:', error);
       setShowHighlightTooltip(false);
