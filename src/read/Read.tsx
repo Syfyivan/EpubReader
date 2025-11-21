@@ -35,7 +35,7 @@ export default function Read({
   const [parser, setParser] = useState<EpubParser | null>(null);
   const [chapters, setChapters] = useState<EpubChapter[]>([]);
   const [currentChapter, setCurrentChapter] = useState<EpubChapter | null>(null);
-  const [chapterContent, setChapterContent] = useState<string>('');
+const [chapterContent, setChapterContent] = useState<string>('');
   const [chapterRenderKey, setChapterRenderKey] = useState<number>(0); // 强制重新渲染的key
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [bookMetadata, setBookMetadata] = useState<BookMetadata | null>(null);
@@ -75,18 +75,86 @@ export default function Read({
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const [showManageTooltip, setShowManageTooltip] = useState(false);
   const [manageTooltipPos, setManageTooltipPos] = useState<{x:number;y:number}>({x:0,y:0});
-  const [manageHighlightId, setManageHighlightId] = useState<string | null>(null);
+const [manageHighlightId, setManageHighlightId] = useState<string | null>(null);
   const suppressRestoreRef = useRef<boolean>(false);
   const [showNoteManager, setShowNoteManager] = useState(false);
   const [noteManagerHighlightId, setNoteManagerHighlightId] = useState<string | null>(null);
   const [allTags, setAllTags] = useState<string[]>([]);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+const scrollContainerRef = useRef<HTMLDivElement>(null);
+const FONT_SIZE_KEY = "epub-reader:fontSize";
+const FONT_MIN = 14;
+const FONT_MAX = 28;
+const clampFontSize = (val: number) =>
+  Math.min(FONT_MAX, Math.max(FONT_MIN, val));
+const getInitialFontSize = () => {
+  if (typeof window === "undefined") {
+    return 18;
+  }
+  const stored = Number.parseInt(
+    window.localStorage.getItem(FONT_SIZE_KEY) || "",
+    10
+  );
+  if (Number.isFinite(stored)) {
+    return clampFontSize(stored);
+  }
+  return 18;
+};
+const [fontSize, setFontSize] = useState<number>(getInitialFontSize);
+const handleFontSizeChange = useCallback((next: number) => {
+  setFontSize(clampFontSize(next));
+}, []);
+const adjustFontSize = useCallback(
+  (delta: number) => {
+    setFontSize((prev) => clampFontSize(prev + delta));
+  },
+  []
+);
+const [showFontPanel, setShowFontPanel] = useState(false);
+const [fontPanelPos, setFontPanelPos] = useState<{ x: number; y: number }>({
+  x: 0,
+  y: 0,
+});
+const fontButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (storageManager) {
       storageRef.current = storageManager;
     }
   }, [storageManager]);
+
+useEffect(() => {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(FONT_SIZE_KEY, String(fontSize));
+  }
+}, [fontSize]);
+
+useEffect(() => {
+  if (contentRef.current) {
+    contentRef.current.style.setProperty("--reader-font-size", `${fontSize}px`);
+  }
+}, [fontSize, chapterRenderKey]);
+
+useEffect(() => {
+  const handleClick = (e: MouseEvent) => {
+    if (!showFontPanel) return;
+    const panel = document.querySelector(".font-size-card");
+    if (
+      panel &&
+      (panel as HTMLElement).contains(e.target as Node)
+    ) {
+      return;
+    }
+    if (
+      fontButtonRef.current &&
+      fontButtonRef.current.contains(e.target as Node)
+    ) {
+      return;
+    }
+    setShowFontPanel(false);
+  };
+  document.addEventListener("mousedown", handleClick);
+  return () => document.removeEventListener("mousedown", handleClick);
+}, [showFontPanel]);
 
   useEffect(() => {
     initialChapterIdRef.current = initialChapterId;
@@ -127,32 +195,58 @@ export default function Read({
 
   // 辅助函数：根据坐标查找文本节点和偏移量
   const findTextNodeAtPoint = useCallback((container: HTMLElement, x: number, y: number): { node: Text; offset: number } | null => {
-    // 优先使用浏览器原生 API
-    if (document.caretRangeFromPoint) {
-      try {
-        const range = document.caretRangeFromPoint(x, y);
+    // 使用现代 API：elementFromPoint + Range API
+    try {
+      const element = document.elementFromPoint(x, y);
+      if (!element || !container.contains(element)) {
+        return null;
+      }
+
+      // 查找最近的文本节点
+      let node: Node | null = element;
+      while (node && node !== container) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const textNode = node as Text;
+          const range = document.createRange();
+          range.selectNodeContents(textNode);
+          const rects = range.getClientRects();
+          
+          // 检查坐标是否在文本节点范围内
+          for (const rect of Array.from(rects)) {
+            if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+              // 计算偏移量
+              const text = textNode.textContent || '';
+              if (text.length === 0) break;
+              const charWidth = rect.width / text.length;
+              const offset = Math.round((x - rect.left) / charWidth);
+              return { 
+                node: textNode, 
+                offset: Math.max(0, Math.min(offset, text.length)) 
+              };
+            }
+          }
+        }
+        node = node.parentNode;
+      }
+    } catch (e) {
+      console.warn('⚠️ elementFromPoint 方法失败:', e);
+    }
+
+    // 降级方案：使用已废弃但可能仍可用的 API（仅作为后备）
+    try {
+      // caretRangeFromPoint 已废弃，但某些浏览器仍支持
+      const doc = document as any;
+      if (doc.caretRangeFromPoint) {
+        const range = doc.caretRangeFromPoint(x, y) as Range | null;
         if (range) {
           const node = range.startContainer;
           if (node.nodeType === Node.TEXT_NODE && container.contains(node)) {
             return { node: node as Text, offset: range.startOffset };
           }
         }
-      } catch (e) {
-        console.warn('⚠️ caretRangeFromPoint 失败:', e);
       }
-    } else if ((document as any).caretPositionFromPoint) {
-      // Firefox 旧版本
-      try {
-        const caretPos = (document as any).caretPositionFromPoint(x, y);
-        if (caretPos && caretPos.offsetNode) {
-          const node = caretPos.offsetNode;
-          if (node.nodeType === Node.TEXT_NODE && container.contains(node)) {
-            return { node: node as Text, offset: caretPos.offset };
-          }
-        }
-      } catch (e) {
-        console.warn('⚠️ caretPositionFromPoint 失败:', e);
-      }
+    } catch {
+      // 忽略废弃 API 的错误
     }
     
     // 降级方案：遍历文本节点查找
@@ -209,7 +303,7 @@ export default function Read({
       tempHighlightRangeRef.current = range.cloneRange();
 
       // 获取 range 的所有矩形区域（可能跨多行）
-      let rects = range.getClientRects();
+      const rects = range.getClientRects();
       if (rects.length === 0) {
         // 初次可能布局未稳定，稍后重试一次
         console.warn('⚠️ createTempHighlightOverlay: 首次未获取到矩形，100ms后重试');
@@ -254,7 +348,7 @@ export default function Read({
         highlightDiv.className = 'temp-highlight-item';
         highlightDiv.style.position = 'absolute';
         // 使用下划线效果：在文本矩形底部画2px高的横条
-        highlightDiv.style.backgroundColor = '#3b82f6';
+        highlightDiv.style.backgroundColor = '#666666';
         highlightDiv.style.borderRadius = '1px';
         highlightDiv.style.pointerEvents = 'none'; // 下划线不接收事件，让文本可以选中
         highlightDiv.style.zIndex = '10';
@@ -285,8 +379,8 @@ export default function Read({
         startHandle.style.cursor = 'ew-resize';
         startHandle.style.pointerEvents = 'auto';
         startHandle.style.zIndex = '20';
-        startHandle.style.background = 'rgba(59, 130, 246, 0.9)';
-        startHandle.style.border = '2px solid #3b82f6';
+        startHandle.style.background = 'rgba(100, 100, 100, 0.9)';
+        startHandle.style.border = '2px solid #666666';
         startHandle.style.borderRadius = '50%';
         startHandle.style.transform = 'translate(-50%, -50%)';
         startHandle.style.display = 'flex';
@@ -313,8 +407,8 @@ export default function Read({
         endHandle.style.pointerEvents = 'auto'; // 手柄必须接收事件，即使父元素是 none
         endHandle.style.zIndex = '20';
         endHandle.style.touchAction = 'none'; // 防止移动端触摸滚动
-        endHandle.style.background = 'rgba(59, 130, 246, 0.9)';
-        endHandle.style.border = '2px solid #3b82f6';
+        endHandle.style.background = 'rgba(100, 100, 100, 0.9)';
+        endHandle.style.border = '2px solid #666666';
         endHandle.style.borderRadius = '50%';
         endHandle.style.transform = 'translate(50%, -50%)';
         endHandle.style.display = 'flex';
@@ -393,49 +487,45 @@ export default function Read({
             const savedRange = tempHighlightRangeRef.current;
             if (!savedRange) return;
 
-            // 使用浏览器原生 API 获取光标位置
+            // 使用现代 API 获取光标位置
             let newRange: Range | null = null;
 
-            if (document.caretRangeFromPoint) {
-              const caretRange = document.caretRangeFromPoint(e.clientX, e.clientY);
-              if (caretRange) {
-                newRange = document.createRange();
-                if (dragHandle === 'start') {
-                  newRange.setStart(caretRange.startContainer, caretRange.startOffset);
-                  newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
-                } else {
-                  newRange.setStart(savedRange.startContainer, savedRange.startOffset);
-                  newRange.setEnd(caretRange.endContainer, caretRange.endOffset);
-                }
-              }
-            } else if ((document as any).caretPositionFromPoint) {
-              const caretPos = (document as any).caretPositionFromPoint(e.clientX, e.clientY);
-              if (caretPos && caretPos.offsetNode) {
-                newRange = document.createRange();
-                if (dragHandle === 'start') {
-                  newRange.setStart(caretPos.offsetNode, caretPos.offset);
-                  newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
-                } else {
-                  newRange.setStart(savedRange.startContainer, savedRange.startOffset);
-                  newRange.setEnd(caretPos.offsetNode, caretPos.offset);
-                }
+            // 使用 elementFromPoint + Range API（现代方法）
+            const textNodeInfo = findTextNodeAtPoint(container, e.clientX, e.clientY);
+            if (textNodeInfo) {
+              newRange = document.createRange();
+              if (dragHandle === 'start') {
+                newRange.setStart(textNodeInfo.node, textNodeInfo.offset);
+                newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
+              } else {
+                newRange.setStart(savedRange.startContainer, savedRange.startOffset);
+                newRange.setEnd(textNodeInfo.node, textNodeInfo.offset);
               }
             }
 
-            // 降级方案：使用辅助函数
+            // 降级方案：使用已废弃但可能仍可用的 API（仅作为后备）
             if (!newRange) {
-              const textNodeInfo = findTextNodeAtPoint(container, e.clientX, e.clientY);
-              if (textNodeInfo) {
-                newRange = document.createRange();
-                if (dragHandle === 'start') {
-                  newRange.setStart(textNodeInfo.node, textNodeInfo.offset);
-                  newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
-                } else {
-                  newRange.setStart(savedRange.startContainer, savedRange.startOffset);
-                  newRange.setEnd(textNodeInfo.node, textNodeInfo.offset);
+              try {
+                // caretRangeFromPoint 已废弃，但某些浏览器仍支持
+                const doc = document as any;
+                if (doc.caretRangeFromPoint) {
+                  const caretRange = doc.caretRangeFromPoint(e.clientX, e.clientY) as Range | null;
+                  if (caretRange) {
+                    newRange = document.createRange();
+                    if (dragHandle === 'start') {
+                      newRange.setStart(caretRange.startContainer, caretRange.startOffset);
+                      newRange.setEnd(savedRange.endContainer, savedRange.endOffset);
+                    } else {
+                      newRange.setStart(savedRange.startContainer, savedRange.startOffset);
+                      newRange.setEnd(caretRange.endContainer, caretRange.endOffset);
+                    }
+                  }
                 }
+              } catch {
+                // 忽略废弃 API 的错误
               }
             }
+
               
               if (!newRange || newRange.collapsed) return;
               
@@ -1320,10 +1410,8 @@ export default function Read({
   // 已不再需要第一行定位的辅助方法（保留位置以便后续扩展）
 
   // 处理文本选择，显示划线提示框
-  const handleTextSelection = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (e && typeof e.preventDefault === 'function') {
-      e.preventDefault();
-    }
+  const handleTextSelection = useCallback(() => {
+    // 不要 preventDefault，否则会阻止文本选择
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) {
       setShowHighlightTooltip(false);
@@ -2158,7 +2246,21 @@ export default function Read({
           <button onClick={handleAnalyzeContent} disabled={!currentChapter}>
             AI 分析
           </button>
-          <button onClick={() => handleExport('json')}>导出 JSON</button>
+          <button
+            ref={fontButtonRef}
+            onClick={() => {
+              if (fontButtonRef.current) {
+                const rect = fontButtonRef.current.getBoundingClientRect();
+                setFontPanelPos({
+                  x: rect.right + 12,
+                  y: rect.top + rect.height / 2,
+                });
+              }
+              setShowFontPanel((prev) => !prev);
+            }}
+          >
+            调整字号
+          </button>
           <button onClick={() => handleExport('markdown')}>导出 Markdown</button>
           <button onClick={() => handleExport('mindmap')}>导出思维导图</button>
         </div>
@@ -2575,6 +2677,52 @@ export default function Read({
               ) : (
                 <div className="analysis-loading">分析生成中...</div>
               )}
+            </div>
+          </div>
+        )}
+        {showFontPanel && (
+          <div
+            className="font-panel-floating"
+            style={{
+              left: `${fontPanelPos.x}px`,
+              top: `${fontPanelPos.y}px`,
+            }}
+          >
+            <div className="font-size-card">
+              <span className="font-size-chip" aria-live="polite">
+                {fontSize}px
+              </span>
+              <div className="font-slider-row">
+                <span className="font-label font-small">A</span>
+                <input
+                  type="range"
+                  min={FONT_MIN}
+                  max={FONT_MAX}
+                  step={1}
+                  value={fontSize}
+                  aria-label="调整阅读字号"
+                  onChange={(e) =>
+                    handleFontSizeChange(Number(e.target.value))
+                  }
+                />
+                <span className="font-label font-large">A</span>
+              </div>
+              <div className="font-step-row" role="group" aria-label="字号微调">
+                <button
+                  type="button"
+                  onClick={() => adjustFontSize(-1)}
+                  disabled={fontSize <= FONT_MIN}
+                >
+                  A-
+                </button>
+                <button
+                  type="button"
+                  onClick={() => adjustFontSize(1)}
+                  disabled={fontSize >= FONT_MAX}
+                >
+                  A+
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -1,12 +1,12 @@
 :root {
-  --primary-color: #6366f1;
-  --primary-hover: #4f46e5;
-  --primary-light: #818cf8;
-  --secondary-color: #8b5cf6;
-  --accent-color: #ec4899;
-  --success-color: #10b981;
-  --warning-color: #f59e0b;
-  --danger-color: #ef4444;
+  --primary-color: #333333;
+  --primary-hover: #1a1a1a;
+  --primary-light: #666666;
+  --secondary-color: #555555;
+  --accent-color: #444444;
+  --success-color: #666666;
+  --warning-color: #777777;
+  --danger-color: #888888;
   
   --bg-primary: #ffffff;
   --bg-secondary: #f9fafb;
@@ -47,10 +47,11 @@ body {
 }
 
 .app {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   background: #ffffff;
+  overflow: hidden;
 }
 
 .app-header {
@@ -85,6 +86,8 @@ body {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 2rem;
   animation: fadeInUp 0.8s ease-out;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .file-upload,
@@ -337,6 +340,7 @@ body {
   border-radius: var(--radius-lg);
   background: var(--bg-secondary);
   transition: var(--transition);
+  min-width: 0; /* 允许 flex 子项收缩 */
 }
 
 .library-item:hover {
@@ -344,10 +348,23 @@ body {
   box-shadow: var(--shadow-md);
 }
 
+.library-item > div:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .library-item-title {
   font-weight: 600;
   font-size: 1.1rem;
   color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.resume-button {
+  flex-shrink: 0;
 }
 
 .library-item-author {

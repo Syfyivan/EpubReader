@@ -375,7 +375,7 @@ function App() {
         </div>
 
         <div className="url-load">
-          <h2>或加载在线 EPUB</h2>
+          <h2>加载在线 EPUB</h2>
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -418,7 +418,7 @@ function App() {
               {recentBooks.map((book) => (
                 <li key={book.id} className="library-item">
                   <div>
-                    <div className="library-item-title">{book.title}</div>
+                    <div className="library-item-title" title={book.title}>{book.title}</div>
                     <div className="library-item-author">{book.author || "未知作者"}</div>
                     <div className="library-item-meta">
                       <span>进度 {(book.progress * 100).toFixed(1)}%</span>
@@ -442,7 +442,7 @@ function App() {
           )}
         </div>
 
-        <div className="features">
+        {/* <div className="features">
           <h2>功能特性</h2>
           <ul>
             <li>✅ 流式按需加载引擎 - 基于 Zip.js 实现章节级动态加载</li>
@@ -452,7 +452,7 @@ function App() {
             <li>✅ 离线数据管理体系 - IndexedDB 支持 10 万+ 标注数据的毫秒级检索</li>
             <li>✅ 多格式导出系统 - 支持 Markdown、JSON、思维导图等多种格式</li>
           </ul>
-        </div>
+        </div> */}
       </div>
     </div>
   );
