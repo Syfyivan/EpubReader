@@ -65,7 +65,11 @@ const [chapterContent, setChapterContent] = useState<string>('');
   const selectionRAFRef = useRef<number | null>(null);
   const isDraggingRef = useRef<boolean>(false); // 防止拖动时递归调用
 
-  const contentRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLElement | null>(null);
+const hostContainerRef = useRef<HTMLElement | null>(null);
+const iframeRef = useRef<HTMLIFrameElement | null>(null);
+const getContentDocument = () => (iframeRef.current?.contentDocument || document);
+const getContentWindow = () => (iframeRef.current?.contentWindow || window);
   const highlightSystemRef = useRef<HighlightSystem | null>(null);
   const virtualRendererRef = useRef<VirtualHighlightRenderer | null>(null);
   const storageRef = useRef<StorageManager | null>(storageManager ?? null);
@@ -183,7 +187,7 @@ useEffect(() => {
   }, [clearTempHighlightOverlay]);
 
   const removeStickySelection = useCallback(() => {
-    const selection = window.getSelection();
+    const selection = getContentWindow().getSelection();
     if (selection && selection.rangeCount > 0) {
       selection.removeAllRanges();
     }
@@ -1412,7 +1416,7 @@ useEffect(() => {
   // 处理文本选择，显示划线提示框
   const handleTextSelection = useCallback(() => {
     // 不要 preventDefault，否则会阻止文本选择
-    const selection = window.getSelection();
+    const selection = getContentWindow().getSelection();
     if (!selection || selection.rangeCount === 0) {
       setShowHighlightTooltip(false);
       selectedRangeDataRef.current = null;
@@ -1513,7 +1517,7 @@ useEffect(() => {
       
       // 延迟清除浏览器选择，确保临时高亮已经完全创建并渲染
       setTimeout(() => {
-        window.getSelection()?.removeAllRanges();
+        getContentWindow().getSelection()?.removeAllRanges();
         console.log('🧹 已清除浏览器选择，临时高亮应该已显示');
       }, 150); // 增加延迟，确保覆盖层完全创建
     } catch (error) {
@@ -1572,7 +1576,7 @@ useEffect(() => {
       
       // 如果都失败，尝试使用当前 selection
       if (!rangeToUse) {
-        const selection = window.getSelection();
+        const selection = getContentWindow().getSelection();
         if (selection && selection.rangeCount > 0) {
           const currentRange = selection.getRangeAt(0);
           if (!currentRange.collapsed && 
@@ -1609,7 +1613,7 @@ useEffect(() => {
     }
 
     // 创建 Selection 对象用于 createHighlight（需要 Selection 接口）
-    const selection = window.getSelection();
+    const selection = getContentWindow().getSelection();
     if (!selection) {
       console.error('❌ 无法获取 Selection 对象');
       return;
@@ -1762,7 +1766,7 @@ useEffect(() => {
         }
       }
       if (!rangeToUse) {
-        const selection = window.getSelection();
+        const selection = getContentWindow().getSelection();
         if (selection && selection.rangeCount > 0) {
           const currentRange = selection.getRangeAt(0);
           if (!currentRange.collapsed && currentRange.toString().trim().length > 0 && contentRef.current.contains(currentRange.commonAncestorContainer)) {
@@ -1784,7 +1788,7 @@ useEffect(() => {
     }
 
     // 临时设置 selection 以复用 createHighlight
-    const selection = window.getSelection();
+    const selection = getContentWindow().getSelection();
     if (selection) {
       try {
         selection.removeAllRanges();
@@ -1794,7 +1798,7 @@ useEffect(() => {
 
     // 先创建划线
     const highlight = highlightSystemRef.current.createHighlight(
-      window.getSelection() as Selection,
+      getContentWindow().getSelection() as Selection,
       contentRef.current || undefined,
       '#3b82f6'
     );
@@ -2039,7 +2043,7 @@ useEffect(() => {
           }
           setShowHighlightTooltip(false);
           selectedRangeDataRef.current = null;
-          window.getSelection()?.removeAllRanges();
+          getContentWindow().getSelection()?.removeAllRanges();
           clearTempHighlightOverlay();
         }
       }
