@@ -11,6 +11,9 @@ import type {
   AnnotationBucket,
   BookMetadata,
   BookNote,
+  KnowledgeGraph,
+  LibrarySearchResult,
+  LibrarySearchScope,
   OrganizedAnnotations,
   StoredHighlight,
 } from "../storage/StorageManager";
@@ -27,7 +30,7 @@ const TagCenter = lazy(() => import("./TagCenter"));
 interface LibraryViewProps {
   books: BookMetadata[];
   storageManager: StorageManager;
-  onOpenBook: (book: BookMetadata) => void;
+  onOpenBook: (book: BookMetadata, options?: { chapterId?: string; scrollTop?: number }) => void;
   onBack: () => void;
   onRefresh: () => Promise<void>;
   activeBookId?: string;
@@ -111,6 +114,16 @@ const formatMcpResult = (value: unknown) => {
     return "";
   }
   return JSON.stringify(value, null, 2);
+};
+
+const downloadTextFile = (content: string, fileName: string, type = "application/json") => {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
 };
 
 const tokenizeKnowledgeText = (text: string) => {
@@ -313,6 +326,12 @@ const LibraryView: React.FC<LibraryViewProps> = ({
   const [mcpSyncing, setMcpSyncing] = useState(false);
   const [mcpInsightLoading, setMcpInsightLoading] = useState<MCPInsightAction | null>(null);
   const [mcpInsight, setMcpInsight] = useState<MCPInsightState | null>(null);
+  const [librarySearchQuery, setLibrarySearchQuery] = useState("");
+  const [librarySearchScope, setLibrarySearchScope] = useState<LibrarySearchScope>("all");
+  const [librarySearchResults, setLibrarySearchResults] = useState<LibrarySearchResult[]>([]);
+  const [librarySearchLoading, setLibrarySearchLoading] = useState(false);
+  const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph | null>(null);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedBook = useMemo(
@@ -739,6 +758,88 @@ const LibraryView: React.FC<LibraryViewProps> = ({
     });
   }, [mcpAnnotationPayload]);
 
+  const handleLibrarySearch = useCallback(async () => {
+    const query = librarySearchQuery.trim();
+    if (!query) {
+      setLibrarySearchResults([]);
+      return;
+    }
+
+    setLibrarySearchLoading(true);
+    setError(null);
+    try {
+      const results = await storageManager.searchLibrary(query, {
+        scope: librarySearchScope,
+        limit: 80,
+      });
+      setLibrarySearchResults(results);
+      setMessage(results.length > 0 ? `找到 ${results.length} 条结果。` : "没有找到匹配结果。");
+    } catch (err) {
+      console.error("Failed to search library:", err);
+      setError("全库搜索失败，请稍后重试。");
+    } finally {
+      setLibrarySearchLoading(false);
+    }
+  }, [librarySearchQuery, librarySearchScope, storageManager]);
+
+  const handleOpenSearchResult = useCallback(
+    (result: LibrarySearchResult) => {
+      const book = books.find((item) => item.id === result.bookId);
+      if (!book) return;
+      setSelectedBookId(book.id);
+      if (result.type === "chapter" || result.chapterId) {
+        onOpenBook(book, {
+          chapterId: result.chapterId,
+        });
+      }
+    },
+    [books, onOpenBook]
+  );
+
+  const handleBuildCrossBookGraph = useCallback(async () => {
+    setKnowledgeLoading(true);
+    setError(null);
+    try {
+      const graph = await storageManager.buildKnowledgeGraph({ limit: 96 });
+      setKnowledgeGraph(graph);
+      setMessage(
+        graph.nodes.length > 0
+          ? `已生成 ${graph.themes.length} 个主题、${graph.edges.length} 条关联。`
+          : "还没有足够的划线或笔记生成知识图谱。"
+      );
+    } catch (err) {
+      console.error("Failed to build knowledge graph:", err);
+      setError("生成知识图谱失败，请确认已有本地或微信读书标注。");
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  }, [storageManager]);
+
+  const handleExportKnowledgeMindMap = useCallback(
+    async (scope: "all" | "book") => {
+      setKnowledgeLoading(true);
+      setError(null);
+      try {
+        const content = await storageManager.exportKnowledgeGraphMindMap(
+          scope === "book" ? selectedBookId ?? undefined : undefined
+        );
+        downloadTextFile(
+          content,
+          scope === "book" && selectedBook
+            ? `${selectedBook.title}-知识图谱思维导图.json`
+            : "跨书知识图谱思维导图.json"
+        );
+        setMessage("知识图谱思维导图已导出。");
+      } catch (err) {
+        console.error("Failed to export knowledge mind map:", err);
+        setError("导出知识图谱思维导图失败。");
+      } finally {
+        setKnowledgeLoading(false);
+      }
+    },
+    [selectedBook, selectedBookId, storageManager]
+  );
+
   const highlightCount = useMemo(() => {
     if (!organized) return 0;
     const uniqueHighlightIds = new Set<string>();
@@ -776,6 +877,16 @@ const LibraryView: React.FC<LibraryViewProps> = ({
 
     return counts;
   }, [organized]);
+
+  const graphThemeNodes = useMemo(
+    () => knowledgeGraph?.nodes.filter((node) => node.type === "theme") ?? [],
+    [knowledgeGraph]
+  );
+
+  const graphAnnotationNodes = useMemo(
+    () => knowledgeGraph?.nodes.filter((node) => node.type === "annotation") ?? [],
+    [knowledgeGraph]
+  );
 
   return (
     <div className="library-container">
@@ -947,6 +1058,134 @@ const LibraryView: React.FC<LibraryViewProps> = ({
                     {importing ? "导入中..." : "导入 JSON / TXT"}
                   </button>
                 </div>
+              </section>
+
+              <section className="library-search-panel">
+                <div className="library-search-header">
+                  <div>
+                    <h3>全库搜索</h3>
+                    <p>书名、全书正文、划线和笔记可统一检索。</p>
+                  </div>
+                  <span>{librarySearchResults.length} 条结果</span>
+                </div>
+                <div className="library-search-controls">
+                  <input
+                    type="search"
+                    value={librarySearchQuery}
+                    placeholder="搜索全库内容"
+                    aria-label="搜索全库内容"
+                    onChange={(e) => setLibrarySearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        handleLibrarySearch();
+                      }
+                    }}
+                  />
+                  <select
+                    value={librarySearchScope}
+                    onChange={(e) => setLibrarySearchScope(e.target.value as LibrarySearchScope)}
+                    aria-label="选择搜索范围"
+                  >
+                    <option value="all">全部</option>
+                    <option value="fullText">只搜正文</option>
+                    <option value="annotations">只搜划线/笔记</option>
+                    <option value="books">只搜书籍</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleLibrarySearch}
+                    disabled={librarySearchLoading || !librarySearchQuery.trim()}
+                  >
+                    {librarySearchLoading ? "检索中..." : "搜索"}
+                  </button>
+                </div>
+                {librarySearchResults.length > 0 && (
+                  <ul className="library-search-results">
+                    {librarySearchResults.map((result) => (
+                      <li key={result.id}>
+                        <button type="button" onClick={() => handleOpenSearchResult(result)}>
+                          <strong>
+                            {result.type === "book"
+                              ? result.bookTitle
+                              : `${result.bookTitle} · ${result.title}`}
+                          </strong>
+                          <span>
+                            {result.type === "highlight"
+                              ? "划线"
+                              : result.type === "note"
+                              ? "笔记"
+                              : result.type === "chapter"
+                              ? "正文"
+                              : "书籍"}
+                            {result.chapterTitle ? ` · ${result.chapterTitle}` : ""}
+                            {result.source === "wechat" ? " · 微信读书" : ""}
+                          </span>
+                          <em>{result.snippet}</em>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <section className="knowledge-graph-panel">
+                <div className="knowledge-graph-header">
+                  <div>
+                    <h3>跨书知识图谱</h3>
+                    <p>按主题把不同书中的划线和笔记聚成可导出的思维导图。</p>
+                  </div>
+                  <span>
+                    {knowledgeGraph
+                      ? `${knowledgeGraph.nodes.length} 节点 · ${knowledgeGraph.edges.length} 关联`
+                      : "尚未生成"}
+                  </span>
+                </div>
+                <div className="knowledge-graph-actions">
+                  <button
+                    type="button"
+                    onClick={handleBuildCrossBookGraph}
+                    disabled={knowledgeLoading}
+                  >
+                    {knowledgeLoading ? "生成中..." : "生成图谱"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleExportKnowledgeMindMap("all")}
+                    disabled={knowledgeLoading}
+                  >
+                    导出跨书思维导图
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleExportKnowledgeMindMap("book")}
+                    disabled={knowledgeLoading || !selectedBookId}
+                  >
+                    导出本书思维导图
+                  </button>
+                </div>
+                {knowledgeGraph && (
+                  <div className="knowledge-graph-preview">
+                    <div className="knowledge-node-cloud" aria-label="知识主题">
+                      {graphThemeNodes.slice(0, 18).map((node) => (
+                        <span key={node.id}>
+                          {node.label}
+                          <small>{node.weight}</small>
+                        </span>
+                      ))}
+                    </div>
+                    {graphAnnotationNodes.length > 0 && (
+                      <ul className="knowledge-annotation-list">
+                        {graphAnnotationNodes.slice(0, 8).map((node) => (
+                          <li key={node.id}>
+                            <strong>{node.bookTitle}</strong>
+                            <span>{node.source === "wechat" ? "微信读书" : "本地"}</span>
+                            <p>{node.snippet}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
               </section>
 
               <section className="weread-sync-panel">

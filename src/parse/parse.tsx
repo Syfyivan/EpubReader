@@ -560,7 +560,7 @@ export class EpubParser {
       const content = await entry.getData(textWriter);
 
       // 处理 HTML 内容
-      const processedContent = this.processChapterContent(content, chapter.href);
+      const processedContent = await this.processChapterContent(content, chapter.href);
 
       // 缓存管理
       if (this.chapterCache.size >= this.maxCacheSize) {
@@ -582,26 +582,156 @@ export class EpubParser {
   /**
    * 处理章节内容（处理相对路径、清理样式等）
    */
-  private processChapterContent(html: string, chapterHref: string): string {
+  private async processChapterContent(html: string, chapterHref: string): Promise<string> {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
 
     // 获取章节所在目录
     const chapterDir = chapterHref.substring(0, chapterHref.lastIndexOf('/') + 1);
+    const transparentPixel =
+      'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
+    const isExternalResource = (value: string) =>
+      /^(https?:|data:|blob:|mailto:|tel:|#)/i.test(value.trim());
+
+    const resolveResourcePath = (value: string, baseDir: string = chapterDir) => {
+      const cleanValue = value.trim().replace(/^['"]|['"]$/g, '').split('#')[0];
+      if (!cleanValue || isExternalResource(cleanValue)) return '';
+      return this.normalizePath(baseDir + cleanValue);
+    };
+
+    const markSrc = (element: Element, attr: string, dataAttr: string, baseDir = chapterDir) => {
+      const value = element.getAttribute(attr);
+      if (!value || isExternalResource(value)) return;
+      const fullPath = resolveResourcePath(value, baseDir);
+      if (!fullPath) return;
+      element.setAttribute(`data-original-${attr}`, value);
+      element.setAttribute(dataAttr, fullPath);
+	      if (attr === 'src') {
+	        element.setAttribute(attr, transparentPixel);
+	      } else if (attr === 'poster') {
+	        element.removeAttribute(attr);
+	      } else if (attr === 'data') {
+	        element.removeAttribute(attr);
+	      }
+	    };
+
+    const parseSrcset = (srcset: string, baseDir = chapterDir) =>
+      srcset
+        .split(',')
+        .map((part) => {
+          const trimmed = part.trim();
+          if (!trimmed) return null;
+          const [url, ...descriptorParts] = trimmed.split(/\s+/);
+          const path = resolveResourcePath(url, baseDir);
+          if (!path) return null;
+          return {
+            path,
+            descriptor: descriptorParts.join(' '),
+          };
+        })
+        .filter((item): item is { path: string; descriptor: string } => item !== null);
+
+    const markSrcset = (element: Element, baseDir = chapterDir) => {
+      const srcset = element.getAttribute('srcset');
+      if (!srcset) return;
+      const entries = parseSrcset(srcset, baseDir);
+      if (entries.length === 0) return;
+      element.setAttribute('data-original-srcset', srcset);
+      element.setAttribute('data-epub-srcset', JSON.stringify(entries));
+      element.removeAttribute('srcset');
+    };
+
+    const markInlineStyle = (element: Element, baseDir = chapterDir) => {
+      const style = element.getAttribute('style');
+      if (!style || !/url\(/i.test(style)) return;
+      element.setAttribute('data-epub-style-original', style);
+      element.setAttribute('data-epub-style-base', baseDir);
+    };
+
+    const inlineStylesheet = async (link: HTMLLinkElement) => {
+      const href = link.getAttribute('href');
+      if (!href || isExternalResource(href)) return;
+      const cssPath = resolveResourcePath(href);
+      if (!cssPath) return;
+
+      try {
+        const cssBlob = await this.loadResource(cssPath);
+        if (!cssBlob) return;
+        const cssText = await cssBlob.text();
+        const style = doc.createElement('style');
+        style.setAttribute('data-epub-css-path', cssPath);
+        style.setAttribute(
+          'data-epub-css-base',
+          cssPath.substring(0, cssPath.lastIndexOf('/') + 1)
+	        );
+	        style.textContent = cssText;
+	        doc.body.prepend(style);
+	        link.remove();
+	      } catch (error) {
+	        console.warn('⚠️ 内联 EPUB 样式失败:', href, error);
+	      }
+    };
 
     // 处理图片路径
     const images = doc.querySelectorAll('img');
     images.forEach((img) => {
-      const src = img.getAttribute('src');
-      if (src && !src.startsWith('http') && !src.startsWith('data:')) {
-        const fullPath = this.normalizePath(chapterDir + src);
-        img.setAttribute('data-original-src', src);
-        img.setAttribute('data-full-path', fullPath);
-        img.setAttribute(
-          'src',
-          'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
-        );
+      markSrc(img, 'src', 'data-epub-src');
+      const legacyPath = img.getAttribute('data-epub-src');
+      if (legacyPath) {
+        img.setAttribute('data-full-path', legacyPath);
       }
+      markSrcset(img);
+    });
+
+	    doc.querySelectorAll('source').forEach((source) => {
+	      markSrc(source, 'src', 'data-epub-src');
+	      markSrcset(source);
+	    });
+
+	    doc.querySelectorAll('track, embed, iframe').forEach((element) => {
+	      markSrc(element, 'src', 'data-epub-src');
+	    });
+
+	    doc.querySelectorAll('object').forEach((object) => {
+	      markSrc(object, 'data', 'data-epub-data');
+	    });
+
+    doc.querySelectorAll('audio, video').forEach((media) => {
+      markSrc(media, 'src', 'data-epub-src');
+      markSrc(media, 'poster', 'data-epub-poster');
+      media.setAttribute('controls', media.getAttribute('controls') ?? '');
+      media.setAttribute('preload', media.getAttribute('preload') ?? 'metadata');
+    });
+
+    doc.querySelectorAll('image').forEach((image) => {
+      const href = image.getAttribute('href') || image.getAttribute('xlink:href');
+      if (!href || isExternalResource(href)) return;
+      const fullPath = resolveResourcePath(href);
+      if (!fullPath) return;
+      image.setAttribute('data-original-href', href);
+      image.setAttribute('data-epub-href', fullPath);
+      image.removeAttribute('href');
+      image.removeAttribute('xlink:href');
+    });
+
+    doc.querySelectorAll<HTMLElement>('[style]').forEach((element) => {
+      markInlineStyle(element);
+    });
+
+    doc.querySelectorAll('style').forEach((style) => {
+      if (!style.getAttribute('data-epub-css-base')) {
+        style.setAttribute('data-epub-css-base', chapterDir);
+      }
+    });
+
+    const stylesheetLinks = Array.from(
+      doc.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][href]')
+    );
+    await Promise.all(stylesheetLinks.map((link) => inlineStylesheet(link)));
+
+    doc.querySelectorAll('a[href^="#"], a[epub\\:type~="noteref"], a[type~="noteref"]').forEach((link) => {
+      link.setAttribute('data-epub-footnote-ref', 'true');
     });
 
     // 提取 body 内容

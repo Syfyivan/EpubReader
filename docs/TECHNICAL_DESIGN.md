@@ -13,6 +13,8 @@ EpubReader 的目标是提供一个本地优先的 EPUB 阅读与标注整理工
 - 本地 EPUB 阅读、章节解析、图片资源加载、阅读进度恢复。
 - 在线 EPUB 直接 URL 加载，并使用 HTTP Range 流式读取。
 - 本地划线、笔记、标签、导出和图书馆整理。
+- 当前书全文搜索、全库搜索、只搜划线/笔记和搜索结果跳转章节。
+- 跨书知识图谱与思维导图导出。
 - 微信读书划线导入和 MCP 同步。
 - 本地 EpubReader 划线与微信读书划线统一整理。
 - AI 内容分析和代码工具。
@@ -119,7 +121,7 @@ EpubReader/
 - 加载本地 EPUB File。
 - 加载远程 EPUB URL。
 - 解析 `META-INF/container.xml`、OPF、spine、NCX、NAV。
-- 提供章节列表、章节内容、封面、图片资源。
+- 提供章节列表、章节内容、封面和 EPUB 资源。
 
 关键路径：
 
@@ -145,11 +147,12 @@ new zip.HttpReader(url, {
 })
 ```
 
-章节图片处理：
+章节资源处理：
 
-- `processChapterContent()` 扫描章节 HTML 内 `img[src]`。
-- 对相对路径图片生成 `data-full-path`。
-- 先用透明占位图替换 `src`，避免浏览器直接请求错误相对路径。
+- `processChapterContent()` 扫描章节 HTML 内 `img/source/audio/video/object/embed/iframe/track` 等资源属性。
+- 支持 `src`、`srcset`、`poster`、SVG `image href/xlink:href`、内联 `style url(...)`。
+- 外链 CSS 会内联为 `style[data-epub-css-base]`，后续 hydrate 阶段重写 CSS `url(...)`，覆盖 CSS 背景图和 `@font-face` 内嵌字体。
+- 对相对资源路径生成 `data-epub-*` 属性，避免浏览器直接请求错误相对路径。
 - 阅读器渲染后再用 `parser.loadResource()` 读取 Blob，并替换为 object URL。
 
 路径规范化：
@@ -170,9 +173,13 @@ new zip.HttpReader(url, {
 - 渲染和保存划线。
 - AI 分析当前章节。
 - AI 代码工具。
-- 替换章节图片资源为 blob URL。
+- EPUB 资源 hydrate，替换图片、SVG、音视频、CSS 背景图、字体等资源为 blob URL。
+- 阅读模式：滚动、双栏、分页。
+- 章节进度、分页页码、预计阅读时长。
+- 当前书全文搜索和搜索结果跳转章节。
+- 脚注弹窗。
 
-章节图片 hydrate 流程：
+章节资源 hydrate 流程：
 
 ```mermaid
 sequenceDiagram
@@ -182,11 +189,11 @@ sequenceDiagram
 
   Parser->>Read: 返回处理后的 chapterContent
   Read->>DOM: dangerouslySetInnerHTML 渲染章节
-  Read->>DOM: 查询 img[data-full-path]
-  loop 每张图片
-    Read->>Parser: loadResource(data-full-path)
+  Read->>DOM: 查询 data-epub-* 资源节点
+  loop 每个资源
+    Read->>Parser: loadResource(resourcePath)
     Parser-->>Read: Blob
-    Read->>DOM: img.src = URL.createObjectURL(blob)
+    Read->>DOM: src/srcset/href/style = object URL
   end
   Read->>Read: 章节切换/卸载时 revokeObjectURL
 ```
@@ -296,6 +303,15 @@ interface BookNote {
 - JSON：完整数据备份。
 - Markdown：按书籍输出读书报告，包含来源、章节、笔记和标签。
 - MindMap JSON：输出可视化结构数据。
+- KnowledgeGraph MindMap JSON：按主题、书籍、标注导出跨书知识图谱。
+
+搜索与图谱：
+
+- `searchLibrary(query, { scope })` 支持 `all`、`books`、`fullText`、`annotations`。
+- 正文全文索引由 `BookFileRecord` 或远程 URL 懒构建，保存在页面会话内存缓存。
+- `buildKnowledgeGraph()` 基于标签、预置主题词、引号短语和英文关键词抽取主题。
+- 图谱节点包括 `theme`、`book`、`annotation`，边记录主题命中、书籍包含和跨书共享主题。
+- `exportKnowledgeGraphMindMap()` 将图谱转为思维导图 JSON。
 
 ### 4.6 图书馆与微信读书整理
 
@@ -306,6 +322,8 @@ interface BookNote {
 - 展示本地书籍列表。
 - 展示当前书籍标注统计。
 - 展示标签、章节、来源整理视图。
+- 全库搜索，支持跨书正文、书籍、划线、笔记。
+- 生成跨书知识图谱，导出单书或跨书思维导图。
 - 导入微信读书 JSON/TXT/Markdown 文件。
 - 通过 Go 后端调用 MCP 服务同步微信读书划线。
 - MCP 阅读整理。
@@ -857,8 +875,8 @@ npm run lint
 
 - 跨设备同步。
 - Obsidian / Notion / Anki 导出。
-- 全文搜索。
-- 多书知识图谱。
+- 语义向量搜索和可视化图谱布局。
+- 图谱节点编辑、合并与手动固定主题。
 
 ## 12. 设计原则
 

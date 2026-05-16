@@ -267,7 +267,7 @@ function App() {
   );
 
   const handleOpenBook = useCallback(
-    async (book: BookMetadata) => {
+    async (book: BookMetadata, options?: { chapterId?: string; scrollTop?: number }) => {
       try {
         setError(null);
         const manager = await ensureStorage();
@@ -280,8 +280,8 @@ function App() {
         setActiveBook(book);
         setBookId(book.id);
         setFile(source);
-        setInitialChapterId(book.currentChapterId);
-        setInitialScrollTop(book.scrollTop);
+        setInitialChapterId(options?.chapterId ?? book.currentChapterId);
+        setInitialScrollTop(options?.scrollTop ?? book.scrollTop);
         setView("reader");
       } catch (err) {
         console.error("Failed to open book:", err);

@@ -28,6 +28,14 @@ type LegacyCaretDocument = Document & {
 };
 
 type CodeToolMode = "generate" | "explain" | "review";
+type ReadingMode = "scroll" | "columns" | "paged";
+
+interface ReaderSearchResult {
+  chapterId: string;
+  chapterTitle: string;
+  snippet: string;
+  matchCount: number;
+}
 
 const blobToDataUrl = (blob: Blob): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -36,6 +44,21 @@ const blobToDataUrl = (blob: Blob): Promise<string> =>
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(blob);
   });
+
+const stripHtml = (html: string) => {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return doc.body.textContent?.replace(/\s+/g, " ").trim() ?? "";
+};
+
+const buildSnippet = (text: string, query: string, radius = 48) => {
+  const lowerText = text.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  const index = lowerText.indexOf(lowerQuery);
+  if (index < 0) return text.slice(0, radius * 2);
+  const start = Math.max(0, index - radius);
+  const end = Math.min(text.length, index + query.length + radius);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
+};
 
 export default function Read({
   file,
@@ -138,6 +161,22 @@ const [codeToolLanguage, setCodeToolLanguage] = useState("typescript");
 const [codeToolInput, setCodeToolInput] = useState("");
 const [codeToolResult, setCodeToolResult] = useState("");
 const [codeToolLoading, setCodeToolLoading] = useState(false);
+const [readingMode, setReadingMode] = useState<ReadingMode>(() => {
+  if (typeof window === "undefined") return "scroll";
+  const stored = window.localStorage.getItem("epub-reader:readingMode");
+  return stored === "columns" || stored === "paged" ? stored : "scroll";
+});
+const [pageIndex, setPageIndex] = useState(0);
+const [pageCount, setPageCount] = useState(1);
+const [chapterProgress, setChapterProgress] = useState(0);
+const [readerSearchQuery, setReaderSearchQuery] = useState("");
+const [readerSearchResults, setReaderSearchResults] = useState<ReaderSearchResult[]>([]);
+const [readerSearchLoading, setReaderSearchLoading] = useState(false);
+const [footnotePopup, setFootnotePopup] = useState<{
+  content: string;
+  x: number;
+  y: number;
+} | null>(null);
 
   useEffect(() => {
     if (storageManager) {
@@ -170,52 +209,295 @@ useEffect(() => {
   }
 
   let cancelled = false;
+  const resourceUrlCache = new Map<string, string>();
 
-  const hydrateChapterImages = async () => {
+  const loadResourceUrl = async (resourcePath: string) => {
+    if (resourceUrlCache.has(resourcePath)) {
+      return resourceUrlCache.get(resourcePath)!;
+    }
+
+    const blob = await parser.loadResource(resourcePath);
+    if (!blob || cancelled) return "";
+
+    const objectUrl = URL.createObjectURL(blob);
+    resourceUrlCache.set(resourcePath, objectUrl);
+    chapterResourceUrlsRef.current.push(objectUrl);
+    return objectUrl;
+  };
+
+  const replaceCssUrls = async (css: string, basePath: string) => {
+    const normalizeResourcePath = (path: string) => {
+      const parts: string[] = [];
+      path.replace(/\\/g, "/").split("/").forEach((part) => {
+        if (!part || part === ".") return;
+        if (part === "..") {
+          parts.pop();
+          return;
+        }
+        parts.push(part);
+      });
+      return parts.join("/");
+    };
+    const resolveCssResourcePath = (path: string) => {
+      const cleanPath = path.split("#")[0];
+      if (cleanPath.startsWith("/")) {
+        return normalizeResourcePath(cleanPath.slice(1));
+      }
+      return normalizeResourcePath(`${basePath}${cleanPath}`);
+    };
+    const matches = Array.from(css.matchAll(/url\((['"]?)([^'")]+)\1\)/gi));
+    let rewritten = css;
+
+    await Promise.all(
+      matches.map(async (match) => {
+        const rawUrl = match[2]?.trim();
+        if (!rawUrl || /^(https?:|data:|blob:|#)/i.test(rawUrl)) return;
+        const resourcePath = resolveCssResourcePath(rawUrl);
+        try {
+          const objectUrl = await loadResourceUrl(resourcePath);
+          if (objectUrl) {
+            rewritten = rewritten.replace(match[0], `url("${objectUrl}")`);
+          }
+        } catch (error) {
+          console.warn("Failed to hydrate EPUB CSS resource:", resourcePath, error);
+        }
+      })
+    );
+
+    return rewritten;
+  };
+
+  const hydrateChapterResources = async () => {
     const container = contentRef.current;
     if (!container) return;
 
-    const images = Array.from(
-      container.querySelectorAll<HTMLImageElement>("img[data-full-path]")
+    const srcElements = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-epub-src], img[data-full-path]")
     );
 
     await Promise.all(
-      images.map(async (img) => {
-        const resourcePath = img.dataset.fullPath;
+      srcElements.map(async (element) => {
+        const resourcePath = element.dataset.epubSrc || element.dataset.fullPath;
         if (!resourcePath) return;
-
         try {
-          const blob = await parser.loadResource(resourcePath);
-          if (!blob) {
-            img.classList.add("epub-image-missing");
-            return;
-          }
-
-          const objectUrl = URL.createObjectURL(blob);
-          if (cancelled) {
-            URL.revokeObjectURL(objectUrl);
-            return;
-          }
-
-          chapterResourceUrlsRef.current.push(objectUrl);
-          img.src = objectUrl;
-          img.classList.remove("epub-image-missing");
-          img.classList.add("epub-image-loaded");
+          const objectUrl = await loadResourceUrl(resourcePath);
+          if (!objectUrl || cancelled) return;
+          element.setAttribute("src", objectUrl);
+          element.classList.remove("epub-image-missing");
+          element.classList.add("epub-resource-loaded");
         } catch (error) {
-          console.warn("Failed to load EPUB image resource:", resourcePath, error);
-          img.classList.add("epub-image-missing");
+          console.warn("Failed to load EPUB resource:", resourcePath, error);
+          element.classList.add("epub-image-missing");
+        }
+      })
+    );
+
+    const posterElements = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-epub-poster]")
+    );
+    await Promise.all(
+      posterElements.map(async (element) => {
+        const resourcePath = element.dataset.epubPoster;
+        if (!resourcePath) return;
+        const objectUrl = await loadResourceUrl(resourcePath);
+        if (objectUrl && !cancelled) {
+          element.setAttribute("poster", objectUrl);
+        }
+      })
+    );
+
+    const dataElements = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-epub-data]")
+    );
+    await Promise.all(
+      dataElements.map(async (element) => {
+        const resourcePath = element.dataset.epubData;
+        if (!resourcePath) return;
+        const objectUrl = await loadResourceUrl(resourcePath);
+        if (objectUrl && !cancelled) {
+          element.setAttribute("data", objectUrl);
+        }
+      })
+    );
+
+    const hrefElements = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-epub-href]")
+    );
+    await Promise.all(
+      hrefElements.map(async (element) => {
+        const resourcePath = element.dataset.epubHref;
+        if (!resourcePath) return;
+        const objectUrl = await loadResourceUrl(resourcePath);
+        if (objectUrl && !cancelled) {
+          element.setAttribute("href", objectUrl);
+          element.setAttributeNS("http://www.w3.org/1999/xlink", "href", objectUrl);
+        }
+      })
+    );
+
+    const srcsetElements = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-epub-srcset]")
+    );
+    await Promise.all(
+      srcsetElements.map(async (element) => {
+        const raw = element.dataset.epubSrcset;
+        if (!raw) return;
+        try {
+          const entries = JSON.parse(raw) as Array<{ path: string; descriptor?: string }>;
+          const hydrated = await Promise.all(
+            entries.map(async (entry) => {
+              const objectUrl = await loadResourceUrl(entry.path);
+              return objectUrl ? `${objectUrl}${entry.descriptor ? ` ${entry.descriptor}` : ""}` : "";
+            })
+          );
+          const nextSrcset = hydrated.filter(Boolean).join(", ");
+          if (nextSrcset && !cancelled) {
+            element.setAttribute("srcset", nextSrcset);
+          }
+        } catch (error) {
+          console.warn("Failed to hydrate EPUB srcset:", error);
+        }
+      })
+    );
+
+    const inlineStyleElements = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-epub-style-original]")
+    );
+    await Promise.all(
+      inlineStyleElements.map(async (element) => {
+        const originalStyle = element.dataset.epubStyleOriginal;
+        if (!originalStyle) return;
+        const basePath = element.dataset.epubStyleBase || "";
+        const rewritten = await replaceCssUrls(originalStyle, basePath);
+        if (!cancelled) {
+          element.setAttribute("style", rewritten);
+        }
+      })
+    );
+
+    const styleElements = Array.from(
+      container.querySelectorAll<HTMLStyleElement>("style[data-epub-css-base]")
+    );
+    await Promise.all(
+      styleElements.map(async (style) => {
+        const basePath = style.dataset.epubCssBase || "";
+        const rewritten = await replaceCssUrls(style.textContent || "", basePath);
+        if (!cancelled) {
+          style.textContent = rewritten;
         }
       })
     );
   };
 
-  hydrateChapterImages();
+  hydrateChapterResources();
 
   return () => {
     cancelled = true;
     clearChapterResourceUrls();
   };
 }, [parser, chapterContent, chapterRenderKey, clearChapterResourceUrls]);
+
+useEffect(() => {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("epub-reader:readingMode", readingMode);
+  }
+  setPageIndex(0);
+  setChapterProgress(0);
+}, [readingMode, currentChapter?.id]);
+
+const updatePagedMetrics = useCallback(() => {
+  const container = contentRef.current;
+  if (!container) {
+    setPageCount(1);
+    setChapterProgress(0);
+    return;
+  }
+
+  if (readingMode === "paged") {
+    const width = Math.max(1, container.clientWidth);
+    const total = Math.max(1, Math.ceil(container.scrollWidth / width));
+    const index = Math.min(pageIndex, total - 1);
+    setPageCount(total);
+    if (index !== pageIndex) {
+      setPageIndex(index);
+    }
+    container.scrollTo({ left: index * width, top: 0, behavior: "smooth" });
+    setChapterProgress(total <= 1 ? 100 : Math.round(((index + 1) / total) * 100));
+    return;
+  }
+
+	  setPageCount(1);
+	  const scrollContainer = scrollContainerRef.current || container;
+	  const scrollable = Math.max(1, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+	  setChapterProgress(Math.round((scrollContainer.scrollTop / scrollable) * 100));
+	}, [pageIndex, readingMode]);
+
+useLayoutEffect(() => {
+  updatePagedMetrics();
+  const handleResize = () => updatePagedMetrics();
+  window.addEventListener("resize", handleResize);
+  return () => window.removeEventListener("resize", handleResize);
+}, [chapterContent, chapterRenderKey, fontSize, readingMode, pageIndex, updatePagedMetrics]);
+
+useEffect(() => {
+	  const container = readingMode === "paged" ? contentRef.current : scrollContainerRef.current;
+	  if (!container || readingMode === "paged") return;
+
+  const handleScroll = () => {
+    const scrollable = Math.max(1, container.scrollHeight - container.clientHeight);
+    setChapterProgress(Math.round((container.scrollTop / scrollable) * 100));
+  };
+  container.addEventListener("scroll", handleScroll);
+  handleScroll();
+  return () => container.removeEventListener("scroll", handleScroll);
+}, [chapterContent, chapterRenderKey, readingMode]);
+
+const goToPagedOffset = useCallback(
+  (nextPageIndex: number) => {
+    if (readingMode !== "paged" || !contentRef.current) return;
+    const nextIndex = Math.min(Math.max(0, nextPageIndex), pageCount - 1);
+    setPageIndex(nextIndex);
+    contentRef.current.scrollTo({
+      left: nextIndex * contentRef.current.clientWidth,
+      top: 0,
+      behavior: "smooth",
+    });
+  },
+  [pageCount, readingMode]
+);
+
+const runReaderSearch = useCallback(async () => {
+  const query = readerSearchQuery.trim();
+  if (!query || !parser) {
+    setReaderSearchResults([]);
+    return;
+  }
+
+  setReaderSearchLoading(true);
+  try {
+    const lowerQuery = query.toLowerCase();
+    const results: ReaderSearchResult[] = [];
+    for (const chapter of chapters) {
+      const html = await parser.loadChapter(chapter.id);
+      const text = stripHtml(html);
+      const lowerText = text.toLowerCase();
+      const matchCount = lowerText.split(lowerQuery).length - 1;
+      if (matchCount > 0) {
+        results.push({
+          chapterId: chapter.id,
+          chapterTitle: chapter.title,
+          snippet: buildSnippet(text, query),
+          matchCount,
+        });
+      }
+    }
+    setReaderSearchResults(results);
+  } catch (error) {
+    console.error("Reader full-text search failed:", error);
+  } finally {
+    setReaderSearchLoading(false);
+  }
+}, [chapters, parser, readerSearchQuery]);
 
 useEffect(() => {
   const handleClick = (e: MouseEvent) => {
@@ -829,6 +1111,7 @@ useEffect(() => {
     if (chapterId !== currentChapter?.id) {
       clearTempHighlightOverlay();
       setShowHighlightTooltip(false);
+      setFootnotePopup(null);
     }
     selectedRangeDataRef.current = null;
     
@@ -957,14 +1240,20 @@ useEffect(() => {
 
             restoreHighlightsForChapter(chapterId);
 
-            if (
-              initialScrollTopRef.current !== undefined &&
-              contentRef.current
-            ) {
-              contentRef.current.scrollTop = initialScrollTopRef.current;
-              initialScrollTopRef.current = undefined;
-            }
-          }
+	            if (
+	              initialScrollTopRef.current !== undefined &&
+	              (contentRef.current || scrollContainerRef.current)
+	            ) {
+	              const scrollTarget =
+	                readingMode === "paged"
+	                  ? contentRef.current
+	                  : scrollContainerRef.current || contentRef.current;
+	              if (scrollTarget) {
+	                scrollTarget.scrollTop = initialScrollTopRef.current;
+	              }
+	              initialScrollTopRef.current = undefined;
+	            }
+	          }
         }, 150);
       }, 100);
 
@@ -977,7 +1266,7 @@ useEffect(() => {
         console.log('Loading set to false');
       }, 50);
     }
-  }, [parser, chapterRenderKey, clearTempHighlightOverlay, bookId, onMetadataChange, currentChapter]);
+	  }, [parser, chapterRenderKey, clearTempHighlightOverlay, bookId, onMetadataChange, currentChapter, readingMode]);
 
   // 恢复划线的函数（提取出来，供多个地方使用）
   const restoreAllHighlights = useCallback(() => {
@@ -1337,10 +1626,21 @@ useEffect(() => {
         return;
       }
 
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        goToPreviousChapter();
-      } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+	      if (readingMode === "paged" && e.key === "ArrowLeft") {
+	        e.preventDefault();
+	        goToPagedOffset(pageIndex - 1);
+	        return;
+	      }
+	      if (readingMode === "paged" && e.key === "ArrowRight") {
+	        e.preventDefault();
+	        goToPagedOffset(pageIndex + 1);
+	        return;
+	      }
+
+	      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+	        e.preventDefault();
+	        goToPreviousChapter();
+	      } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
         e.preventDefault();
         goToNextChapter();
       }
@@ -1350,7 +1650,7 @@ useEffect(() => {
     return () => {
       window.removeEventListener('keydown', handleKeyPress);
     };
-  }, [goToPreviousChapter, goToNextChapter]);
+	  }, [goToPreviousChapter, goToNextChapter, goToPagedOffset, pageIndex, readingMode]);
 
   useEffect(() => {
     // 初始化组件
@@ -2159,10 +2459,13 @@ useEffect(() => {
     };
   }, [showHighlightTooltip, showManageTooltip, clearTempHighlightOverlay]);
 
-  useEffect(() => {
-    const container = contentRef.current;
-    if (!container || !storageRef.current) return;
-    let timer: number | undefined;
+	  useEffect(() => {
+	    const container =
+	      readingMode === "paged"
+	        ? contentRef.current
+	        : scrollContainerRef.current || contentRef.current;
+	    if (!container || !storageRef.current) return;
+	    let timer: number | undefined;
 
     const persistScroll = async () => {
       if (!storageRef.current) return;
@@ -2186,7 +2489,7 @@ useEffect(() => {
       container.removeEventListener("scroll", handleScroll);
       if (timer) window.clearTimeout(timer);
     };
-  }, [bookId, onMetadataChange]);
+	  }, [bookId, onMetadataChange, readingMode, chapterRenderKey]);
 
   useEffect(() => {
     if (!tooltipRef.current) return;
@@ -2292,10 +2595,13 @@ useEffect(() => {
     }
   }, [codeToolInput, codeToolLanguage, codeToolMode]);
 
-  const progressDisplay = Math.min(
-    100,
-    Math.max(0, (bookMetadata?.progress ?? 0) * 100)
-  ).toFixed(1);
+	  const progressDisplay = Math.min(
+	    100,
+	    Math.max(0, (bookMetadata?.progress ?? 0) * 100)
+	  ).toFixed(1);
+	  const estimatedReadMinutes = chapterContent
+	    ? Math.max(1, Math.ceil(stripHtml(chapterContent).length / 500))
+	    : 0;
 
   if (loading && !parser) {
     return <div className="loading">加载中...</div>;
@@ -2320,6 +2626,13 @@ useEffect(() => {
         </div>
         <div className="topbar-meta">
           <span>进度 {progressDisplay}%</span>
+	          {currentChapter && (
+	            <span>
+	              章节 {chapterProgress}%
+	              {readingMode === "paged" ? ` · ${pageIndex + 1}/${pageCount} 页` : ""}
+	            </span>
+	          )}
+	          {estimatedReadMinutes > 0 && <span>预计 {estimatedReadMinutes} 分钟</span>}
           {bookMetadata?.lastReadAt && (
             <span>
               最近阅读 {new Date(bookMetadata.lastReadAt).toLocaleString("zh-CN")}
@@ -2392,6 +2705,77 @@ useEffect(() => {
           <button onClick={() => handleExport('mindmap')}>导出思维导图</button>
         </div>
 
+        <div className="reading-mode-panel">
+          <h3>阅读模式</h3>
+          <div className="reading-mode-buttons" role="group" aria-label="阅读模式">
+            <button
+              type="button"
+              className={readingMode === "scroll" ? "active" : ""}
+              onClick={() => setReadingMode("scroll")}
+            >
+              滚动
+            </button>
+            <button
+              type="button"
+              className={readingMode === "columns" ? "active" : ""}
+              onClick={() => setReadingMode("columns")}
+            >
+              双栏
+            </button>
+            <button
+              type="button"
+              className={readingMode === "paged" ? "active" : ""}
+              onClick={() => setReadingMode("paged")}
+            >
+              分页
+            </button>
+          </div>
+        </div>
+
+        <div className="reader-search-panel">
+          <h3>全文搜索</h3>
+          <div className="reader-search-row">
+            <input
+              type="search"
+              value={readerSearchQuery}
+              placeholder="搜索当前书籍"
+              aria-label="搜索当前书籍全文"
+              onChange={(event) => setReaderSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  runReaderSearch();
+                }
+              }}
+            />
+            <button
+              type="button"
+              onClick={runReaderSearch}
+              disabled={readerSearchLoading || !readerSearchQuery.trim()}
+            >
+              {readerSearchLoading ? "搜索中" : "搜索"}
+            </button>
+          </div>
+          {readerSearchResults.length > 0 && (
+            <ul className="reader-search-results">
+              {readerSearchResults.slice(0, 20).map((result) => (
+                <li key={result.chapterId}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      loadChapter(result.chapterId);
+                      setPageIndex(0);
+                    }}
+                  >
+                    <strong>{result.chapterTitle}</strong>
+                    <span>{result.matchCount} 处匹配</span>
+                    <em>{result.snippet}</em>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
         {/* {highlights.length > 0 && (
           <div className="highlights-list">
             <h3>划线 ({highlights.length})</h3>
@@ -2435,7 +2819,10 @@ useEffect(() => {
         )} */}
       </div>
 
-      <div className="read-content">
+      <div className={`read-content read-mode-${readingMode}`} ref={scrollContainerRef}>
+        <div className="chapter-progress-track" aria-hidden="true">
+          <span style={{ width: `${chapterProgress}%` }} />
+        </div>
         {loading && <div className="loading-indicator">加载中...</div>}
         {currentChapter && chapterContent && (
           <>
@@ -2446,7 +2833,7 @@ useEffect(() => {
             <div
               key={`chapter-${currentChapter.id}-${chapterRenderKey}`}
               ref={contentRef}
-              className="chapter-content"
+              className={`chapter-content chapter-content-${readingMode}`}
               dangerouslySetInnerHTML={{ __html: chapterContent }}
               onMouseUp={handleTextSelection}
               onClick={(e) => {
@@ -2486,6 +2873,24 @@ useEffect(() => {
                   const href = link.getAttribute('href');
                   if (!href) return false;
 
+	                  if (link.dataset.epubFootnoteRef === "true" && href.startsWith("#")) {
+	                    const noteId = decodeURIComponent(href.slice(1));
+	                    const candidate = contentRef.current?.ownerDocument.getElementById(noteId);
+	                    const noteTarget =
+	                      candidate && contentRef.current?.contains(candidate)
+	                        ? candidate
+	                        : null;
+                    if (noteTarget) {
+                      const mouseEvent = e as unknown as MouseEvent;
+                      setFootnotePopup({
+                        content: noteTarget.innerHTML,
+                        x: mouseEvent.clientX,
+                        y: mouseEvent.clientY,
+                      });
+                      return false;
+                    }
+                  }
+
                   console.log('🔗 Link clicked:', href, 'from highlight:', target.classList.contains('epub-highlight'));
 
                   // 检查是否是内部章节链接（相对路径或锚点）
@@ -2522,6 +2927,50 @@ useEffect(() => {
                 }
               }}
             />
+            {readingMode === "paged" && (
+              <div className="paged-controls">
+                <button
+                  type="button"
+                  onClick={() => goToPagedOffset(pageIndex - 1)}
+                  disabled={pageIndex <= 0}
+                >
+                  上一页
+                </button>
+                <span>
+                  {pageIndex + 1} / {pageCount}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => goToPagedOffset(pageIndex + 1)}
+                  disabled={pageIndex >= pageCount - 1}
+                >
+                  下一页
+                </button>
+              </div>
+            )}
+
+            {footnotePopup && (
+              <div
+                className="footnote-popup"
+                style={{
+                  left: `${Math.min(footnotePopup.x, window.innerWidth - 360)}px`,
+                  top: `${Math.min(footnotePopup.y + 12, window.innerHeight - 240)}px`,
+                }}
+              >
+                <button
+                  type="button"
+                  className="footnote-close"
+                  onClick={() => setFootnotePopup(null)}
+                  aria-label="关闭脚注"
+                >
+                  ×
+                </button>
+                <div
+                  className="footnote-popup-content"
+                  dangerouslySetInnerHTML={{ __html: footnotePopup.content }}
+                />
+              </div>
+            )}
             
             {/* 划线提示框 */}
             {showHighlightTooltip && (
