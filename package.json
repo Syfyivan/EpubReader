@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "backend": "cd backend && npm run dev",
+    "backend": "cd backend && go run .",
     "build": "tsc -b && vite build",
-    "build:backend": "cd backend && npm run build",
+    "build:backend": "cd backend && rm -rf dist && mkdir -p dist && go build -o dist/epub-reader-backend .",
     "lint": "eslint .",
     "preview": "vite preview"
   },

@@ -130,6 +130,7 @@ const markdown = await storage.exportToMarkdown(bookId);
 
 - Node.js >= 18.0.0
 - npm >= 9.0.0
+- Go >= 1.22
 
 ### 快速开始
 
@@ -141,11 +142,6 @@ cd epub-reader
 # 安装前端依赖
 npm install
 
-# 安装后端依赖
-cd backend
-npm install
-cd ..
-
 # 启动后端服务器（新终端窗口）
 npm run backend
 
@@ -155,18 +151,17 @@ npm run dev
 
 ### 环境配置
 
-后端 API Key 已在 `backend/.env` 文件中预配置，可以直接使用。如需修改：
+后端会读取 `backend/.env` 或项目根目录 `.env`。如需启用 AI 能力，请配置：
 
 ```bash
 # 编辑后端环境变量
 # backend/.env
-DASHSCOPE_API_KEY=sk-60af58b5c55947e38b08e2dc212bfb07
+DASHSCOPE_API_KEY=your_api_key_here
 DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 PORT=3001
-FRONTEND_URL=http://localhost:5173
+FRONTEND_URL=http://localhost:5173,http://127.0.0.1:5173
+MCP_SERVER_PATH=mcp-server
 ```
-
-**注意**：项目已经配置好了 API Key，可以直接使用！
 
 ## 🎮 使用方法
 
@@ -268,19 +263,11 @@ EpubReader/
 │   │   ├── Read.tsx
 │   │   └── Read.css
 │   └── App.tsx         # 主应用
-├── backend/            # 后端代码
-│   ├── src/
-│   │   ├── ai/         # AI 服务
-│   │   │   ├── ai.service.ts    # LangChain.js 集成
-│   │   │   ├── ai.controller.ts # REST API
-│   │   │   └── ai.module.ts
-│   │   ├── config/     # 后端配置
-│   │   │   └── dashscope.config.ts
-│   │   ├── app.module.ts
-│   │   └── main.ts     # 后端入口
-│   ├── .env            # 后端环境变量（含 API Key）
-│   ├── package.json
-│   └── tsconfig.json
+├── backend/            # Go 后端代码
+│   ├── main.go         # HTTP 服务、CORS、环境配置
+│   ├── ai.go           # DashScope AI 接口
+│   ├── mcp.go          # MCP stdio JSON-RPC 桥
+│   └── go.mod
 ├── public/
 ├── package.json
 ├── tsconfig.json
