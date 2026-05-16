@@ -1,414 +1,431 @@
-# 📚 Epub 智能阅读器
+# EpubReader 使用说明书
 
-一个功能强大的现代化 EPUB 阅读器，集成了 AI 辅助、智能笔记管理和高性能渲染技术。
+EpubReader 是一个本地优先的 EPUB 阅读器。它支持本地 EPUB、在线 EPUB URL、划线、笔记、图书馆整理、微信读书划线导入/同步，以及可选的 AI 阅读分析。
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![React](https://img.shields.io/badge/React-19.1-61dafb.svg)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6.svg)
+数据默认保存在浏览器本地 IndexedDB 中，不会自动上传到云端。AI 和微信读书同步功能需要启动本项目自带的 Go 后端。
 
-## ✨ 核心功能
+## 你可以用它做什么
 
-### 1. 🚀 流式按需加载引擎
+- 阅读本地 EPUB 文件
+- 通过在线 EPUB URL 阅读远程书籍
+- 在正文中划线、添加笔记、打标签
+- 在图书馆里按标签、章节、来源整理划线
+- 导入微信读书划线文件
+- 通过 MCP 同步微信读书书架和划线
+- 把本地 EpubReader 划线和微信读书划线放在一起整理
+- 使用 AI 生成章节摘要、洞察、问题和知识关联
+- 使用 AI 代码工具生成、解释、审查代码
+- 导出 JSON、Markdown、思维导图数据
 
-- **基于 Zip.js** 重构文件解析核心，实现章节级动态加载
-- **HTTP Range Requests** 支持远程文件的流式读取
-- **File API** 支持本地文件的高效处理
-- **智能缓存机制** 提升阅读体验
+## 快速开始
 
-```typescript
-// 支持本地文件
-await epubParser.load(file);
+### 1. 准备环境
 
-// 支持远程文件（HTTP Range Requests）
-await epubParser.load('https://example.com/book.epub');
-```
+你需要先安装：
 
-### 2. 🎯 高精度划线定位系统
+- Node.js 18 或更新版本
+- npm 9 或更新版本
+- Go 1.22 或更新版本
 
-- **多级回退定位算法**
-  - CFI (Canonical Fragment Identifier)
-  - 语义上下文匹配
-  - 文本流偏移量
-- **复杂CSS排版支持** 解决划线稳定性问题
-- **虚拟滚动优化** 支持万级划线数据的 60fps 流畅展示
-
-```typescript
-// 创建高精度划线
-const highlight = highlightSystem.createHighlight(
-  selection,
-  document,
-  '#ffeb3b'
-);
-
-// 虚拟滚动渲染（性能优化）
-const renderer = new VirtualHighlightRenderer(highlightSystem);
-renderer.setHighlights(highlights);
-```
-
-### 3. 🤖 AI 思考辅助管道
-
-- **Nest.js 后端架构** 处理 AI 请求，保护 API Key 安全
-- **基于 LangChain.js** 构建提示词工程与处理链
-- **阿里云通义千问** 模型集成（qwen-plus / qwen-max / qwen3-coder-flash）
-- **自动生成功能**
-  - 内容摘要
-  - 多角度解读
-  - 启发式问题
-  - 知识关联
-  - 代码生成/解释/审查
-
-```typescript
-// AI 内容分析（通过后端 API）
-const analysis = await aiClient.analyzeContent(chapterContent);
-
-// 包含：
-// - summary: 内容摘要
-// - insights: 深度洞察
-// - questions: 启发式问题
-// - connections: 知识关联
-```
-
-### 4. 🔗 MCP 驱动的笔记分析引擎
-
-- **MCP 客户端集成** 实现结构化数据获取
-- **微信读书 OpenAPI** 同步（可选）
-- **智能功能**
-  - get_bookshelf: 获取书架
-  - search_books: 搜索书籍
-  - get_book_notes: 获取笔记
-  - analyze_reading: 阅读分析
-
-```typescript
-// MCP 客户端使用
-await mcpClient.connect();
-const books = await mcpClient.getBookshelf();
-const notes = await mcpClient.getBookNotes(bookId);
-const analysis = await mcpClient.generateReadingAnalysis(notes);
-```
-
-### 5. 💾 离线数据管理体系
-
-- **IndexedDB** 存储，支持 10万+ 标注数据
-- **毫秒级检索** 性能优化
-- **多格式导出**
-  - JSON 数据导出
-  - Markdown 读书报告
-  - 思维导图（JSON格式）
-  - PDF 导出（计划中）
-
-```typescript
-// 存储管理
-const storage = new StorageManager();
-await storage.init();
-
-// 保存划线
-await storage.saveHighlight(highlight);
-
-// 搜索（全文）
-const results = await storage.searchHighlights('关键词');
-
-// 导出
-const markdown = await storage.exportToMarkdown(bookId);
-```
-
-## 🛠️ 技术栈
-
-| 技术 | 用途 | 版本 |
-|------|------|------|
-| React | 前端 UI 框架 | 19.1 |
-| TypeScript | 类型安全 | 5.9 |
-| Vite | 前端构建工具 | 7.1 |
-| Nest.js | 后端框架 | 10.3 |
-| Zip.js | EPUB 解析 | 2.7 |
-| IndexedDB | 离线存储 | - |
-| LangChain.js | AI 集成 | 0.3 |
-| MCP SDK | 协议集成 | 1.0 |
-
-## 📦 安装
-
-### 前置要求
-
-- Node.js >= 18.0.0
-- npm >= 9.0.0
-- Go >= 1.22
-
-### 快速开始
+### 2. 安装依赖
 
 ```bash
-# 克隆项目
-git clone https://github.com/yourusername/epub-reader.git
-cd epub-reader
-
-# 安装前端依赖
 npm install
+```
 
-# 启动后端服务器（新终端窗口）
+### 3. 启动后端
+
+打开一个终端窗口：
+
+```bash
 npm run backend
+```
 
-# 启动前端开发服务器（另一个终端窗口）
+后端默认运行在：
+
+```text
+http://localhost:3001
+```
+
+### 4. 启动前端
+
+再打开一个终端窗口：
+
+```bash
 npm run dev
 ```
 
-### 环境配置
+前端默认运行在：
 
-后端会读取 `backend/.env` 或项目根目录 `.env`。如需启用 AI 能力，请配置：
+```text
+http://localhost:5173
+```
 
-```bash
-# 编辑后端环境变量
-# backend/.env
+然后用浏览器打开这个地址即可开始使用。
+
+## 基础阅读
+
+### 导入本地 EPUB
+
+1. 打开首页。
+2. 点击选择 EPUB 文件。
+3. 选择本地 `.epub` 文件。
+4. 进入阅读器后，可以通过目录切换章节。
+
+本地 EPUB 文件会保存到浏览器 IndexedDB 中，后续可以从图书馆继续打开。
+
+### 打开在线 EPUB
+
+1. 在首页输入 EPUB 文件 URL。
+2. 点击加载。
+3. 阅读器会直接用 URL 加载 EPUB。
+
+在线 EPUB 最好满足：
+
+- 允许浏览器跨域访问，也就是支持 CORS
+- 支持 HTTP Range 请求
+- 返回正确的 EPUB 文件内容
+
+如果远程服务器不支持 CORS 或 Range，在线加载可能失败。此时建议先下载 EPUB，再用本地导入。
+
+## 阅读器操作
+
+### 目录导航
+
+阅读器会解析 EPUB 目录。点击左侧目录项，可以跳转到对应章节。
+
+### 划线
+
+1. 用鼠标选中正文中的一段文字。
+2. 系统会创建划线。
+3. 划线会保存到当前书籍下。
+
+本地划线来源会标记为：
+
+```text
+local
+```
+
+### 笔记和标签
+
+划线后可以添加笔记和标签。标签会用于图书馆里的分类整理。
+
+建议标签写得短一点，例如：
+
+- 人物
+- 方法论
+- 写作
+- 心理学
+- 金句
+- 待读
+
+### AI 分析
+
+点击阅读器里的 AI 分析按钮，可以对当前章节生成：
+
+- 摘要
+- 深度洞察
+- 启发式问题
+- 知识关联
+
+AI 功能需要配置 `DASHSCOPE_API_KEY`，否则后端可以启动，但 AI 接口会返回未配置错误。
+
+### AI 代码工具
+
+阅读器里也提供 AI 代码工具，支持：
+
+- 生成代码
+- 解释代码
+- 审查代码
+
+这个功能同样需要配置 AI Key。
+
+## 图书馆
+
+点击图书馆后，可以管理已经导入或打开过的书籍。
+
+图书馆支持：
+
+- 查看书籍列表
+- 搜索书名或作者
+- 继续阅读
+- 编辑书名和作者
+- 删除书籍
+- 查看当前书籍的划线和笔记统计
+- 按标签整理
+- 按章节整理
+- 按来源整理
+
+来源分为：
+
+```text
+local   本地 EpubReader 划线
+wechat  微信读书划线
+```
+
+## 整理本地划线和微信读书划线
+
+这是当前项目最核心的整理能力之一。
+
+### 本地 EpubReader 划线
+
+你在 EpubReader 里创建的划线会自动进入图书馆整理系统。
+
+它们会参与：
+
+- 标签分类
+- 章节分类
+- 来源分类
+- Markdown 导出
+- 思维导图导出
+- MCP 阅读整理
+
+### 导入微信读书划线文件
+
+如果你已经有微信读书划线导出文件，可以在图书馆里导入。
+
+支持格式：
+
+- JSON
+- TXT
+- Markdown
+
+操作步骤：
+
+1. 进入图书馆。
+2. 选择一本本地 EPUB。
+3. 点击导入微信读书。
+4. 选择微信读书划线文件。
+5. 导入完成后，微信读书划线会和本地划线一起整理。
+
+导入后的微信读书划线来源会标记为：
+
+```text
+wechat
+```
+
+默认标签包括：
+
+```text
+微信读书
+划线
+```
+
+### 通过 MCP 同步微信读书
+
+如果你有可用的微信读书 MCP 服务，可以通过图书馆同步。
+
+操作步骤：
+
+1. 启动 Go 后端：`npm run backend`
+2. 进入图书馆。
+3. 选择一本本地 EPUB。
+4. 在微信读书 MCP 同步区域填写 MCP 服务命令。
+5. 搜索微信读书书籍。
+6. 选择匹配的微信读书书籍。
+7. 点击同步划线。
+
+如果不填写 MCP 服务命令，后端会使用环境变量 `MCP_SERVER_PATH`，没有配置时默认使用：
+
+```text
+mcp-server
+```
+
+### 关于微信读书账号
+
+当前 EpubReader 不直接登录微信读书账号，也不知道你具体使用的是哪个微信读书账号。
+
+账号由你配置的微信读书 MCP 服务决定：
+
+- MCP 服务使用哪个微信读书登录态，同步到的就是哪个账号的数据
+- 换一个 MCP 服务或登录态，返回的数据也会变
+- 当前界面还不会显示微信读书账号昵称或 ID
+
+因此，如果你有多个微信读书账号，建议先确认 MCP 服务当前绑定的是哪个账号，再进行同步。
+
+后续可以扩展账号识别、多账号隔离和同步去重。
+
+### MCP 阅读整理
+
+图书馆里还有 MCP 阅读整理区域，可以对当前书籍的本地划线、微信读书划线和笔记执行：
+
+- 同步本地标注到 MCP
+- 阅读分析
+- 笔记分类
+- 知识关联
+
+知识关联目前可以在本地基于标注内容生成；阅读分析和笔记分类依赖 MCP 服务是否提供对应工具。
+
+## 导出数据
+
+图书馆支持导出整理后的数据。
+
+### JSON
+
+适合备份和迁移，保留原始结构。
+
+### Markdown
+
+适合生成读书报告。导出的划线会包含：
+
+- 划线内容
+- 来源：本地或微信读书
+- 章节
+- 笔记
+- 标签
+
+### 思维导图
+
+适合导入其他可视化工具继续整理。
+
+## AI 配置
+
+后端会读取 `backend/.env`，也会尝试读取项目根目录 `.env`。
+
+示例：
+
+```env
 DASHSCOPE_API_KEY=your_api_key_here
 DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DASHSCOPE_SUMMARY_MODEL=qwen-plus
+DASHSCOPE_ANALYSIS_MODEL=qwen-max
+DASHSCOPE_CODER_MODEL=qwen3-coder-flash
+DASHSCOPE_TEMPERATURE=0.7
+DASHSCOPE_MAX_TOKENS=4000
 PORT=3001
 FRONTEND_URL=http://localhost:5173,http://127.0.0.1:5173
 MCP_SERVER_PATH=mcp-server
+MCP_TIMEOUT_SECONDS=30
 ```
 
-## 🎮 使用方法
-
-### 基本使用
-
-1. **加载 EPUB 文件**
-   - 本地文件：点击选择文件按钮
-   - 远程文件：输入 EPUB 文件 URL
-
-2. **阅读与导航**
-   - 左侧目录：点击章节名称跳转
-   - 右侧内容：滚动阅读
-
-3. **创建划线**
-   - 选中文本后自动创建划线
-   - 支持自定义颜色和添加笔记
-
-4. **AI 分析**
-   - 确保后端服务已启动（`npm run backend`）
-   - 点击"AI 分析"按钮
-   - 获取内容摘要、洞察和问题
-
-5. **导出笔记**
-   - JSON：原始数据
-   - Markdown：读书报告
-   - 思维导图：可视化展示
-
-### 高级功能
-
-#### 虚拟滚动性能优化
-
-当划线数量超过 1000 条时，自动启用虚拟滚动优化：
-
-```typescript
-// 性能统计
-const stats = renderer.getPerformanceStats();
-console.log(`
-  总划线数: ${stats.totalHighlights}
-  可见划线: ${stats.visibleHighlights}
-  渲染队列: ${stats.renderQueueSize}
-`);
-```
-
-#### 自定义 AI 提示词
-
-```typescript
-// 优化提示词
-const optimizedPrompt = await aiAssistant.optimizePrompt(
-  basePrompt,
-  examples
-);
-
-// 生成思考角度
-const angles = await aiAssistant.generateThinkingAngles(
-  content,
-  context
-);
-```
-
-#### MCP 服务器集成
-
-```typescript
-// 自定义 MCP 服务器路径
-await mcpClient.connect('/path/to/mcp-server');
-
-// 智能笔记分类
-const classified = await mcpClient.classifyNotes(notes);
-// 返回: Map<category, notes[]>
-```
-
-## 📊 性能指标
-
-| 指标 | 数值 |
-|------|------|
-| 初始加载时间 | < 2s |
-| 章节切换 | < 500ms |
-| 划线创建 | < 100ms |
-| 虚拟滚动帧率 | 60fps |
-| 支持划线数量 | 100,000+ |
-| IndexedDB 查询 | < 10ms |
-
-## 🏗️ 项目结构
-
-```
-EpubReader/
-├── src/                # 前端代码
-│   ├── parse/          # EPUB 解析引擎
-│   │   └── Parse.tsx   # Zip.js 流式加载
-│   ├── highlight/      # 划线系统
-│   │   ├── HighlightSystem.ts           # 高精度定位
-│   │   └── VirtualHighlightRenderer.ts  # 虚拟滚动
-│   ├── api/            # API 客户端
-│   │   └── aiClient.ts     # 后端 AI API 调用
-│   ├── mcp/            # MCP 客户端
-│   │   └── MCPClient.ts    # 笔记分析引擎
-│   ├── storage/        # 数据管理
-│   │   └── StorageManager.ts  # IndexedDB
-│   ├── read/           # 阅读组件
-│   │   ├── Read.tsx
-│   │   └── Read.css
-│   └── App.tsx         # 主应用
-├── backend/            # Go 后端代码
-│   ├── main.go         # HTTP 服务、CORS、环境配置
-│   ├── ai.go           # DashScope AI 接口
-│   ├── mcp.go          # MCP stdio JSON-RPC 桥
-│   └── go.mod
-├── public/
-├── package.json
-├── tsconfig.json
-└── vite.config.ts
-```
-
-## 🔧 开发指南
-
-### 本地开发
+配置完成后，重启后端：
 
 ```bash
-# 启动后端服务器（终端窗口 1）
+npm run backend
+```
+
+可以访问下面的接口确认 AI 状态：
+
+```text
+http://localhost:3001/api/ai/status
+```
+
+## 常见问题
+
+### 后端没启动会怎么样？
+
+基础 EPUB 阅读、本地划线和图书馆仍然可以使用。
+
+但这些功能需要后端：
+
+- AI 分析
+- AI 代码工具
+- 微信读书 MCP 同步
+- MCP 阅读整理
+
+### 为什么 AI 功能提示未配置？
+
+通常是没有配置 `DASHSCOPE_API_KEY`。
+
+请在 `backend/.env` 或项目根目录 `.env` 中添加：
+
+```env
+DASHSCOPE_API_KEY=your_api_key_here
+```
+
+然后重启后端。
+
+### 为什么在线 EPUB 加载失败？
+
+常见原因：
+
+- URL 不是 EPUB 文件
+- 远程服务器不允许 CORS
+- 远程服务器不支持 Range 请求
+- 网络不可访问
+
+建议先下载到本地，再通过本地文件导入。
+
+### 为什么微信读书同步失败？
+
+常见原因：
+
+- 后端没有启动
+- MCP 服务命令不正确
+- MCP 服务没有微信读书登录态
+- MCP 服务没有提供 `get_bookshelf`、`search_books`、`get_book_notes` 等工具
+- 当前微信读书账号没有对应书籍或划线
+
+### 微信读书划线能跳回 EPUB 正文吗？
+
+目前微信读书划线可以统一整理、分类和导出，但还不能像本地划线一样精准跳回 EPUB 正文位置。
+
+原因是微信读书划线没有本地 EPUB 的 XPath 定位信息。
+
+后续可以通过章节名匹配和文本片段搜索，做近似跳转。
+
+### 数据保存在哪里？
+
+主要数据保存在浏览器 IndexedDB 中，包括：
+
+- 书籍元数据
+- 本地 EPUB 文件
+- 阅读进度
+- 划线
+- 笔记
+- 标签
+- 微信读书导入数据
+
+清理浏览器站点数据可能会删除这些内容。建议定期导出 JSON 备份。
+
+## 开发命令
+
+```bash
+# 启动前端
+npm run dev
+
+# 启动 Go 后端
 npm run backend
 
-# 启动前端开发服务器（终端窗口 2）
-npm run dev
+# 前端构建
+npm run build
+
+# 后端构建
+npm run build:backend
 
 # 代码检查
 npm run lint
+
+# Go 后端测试
+cd backend && go test ./...
 ```
 
-### 构建部署
+## 当前限制
 
-```bash
-# 构建前端
-npm run build
+- 微信读书账号身份暂时由 MCP 服务决定，EpubReader 不直接显示账号信息
+- 微信读书划线暂时不能精准跳回本地 EPUB 原句
+- 在线 EPUB 依赖远程服务器支持 CORS 和 Range
+- AI 功能依赖 DashScope API Key
+- 数据默认存储在浏览器本地，暂未提供跨设备云同步
 
-# 构建后端
-npm run build:backend
+## 推荐使用流程
 
-# 预览构建结果
-npm run preview
-```
+1. 本地导入一本 EPUB。
+2. 阅读并创建本地划线。
+3. 进入图书馆，选择这本书。
+4. 导入或同步微信读书里的同一本书划线。
+5. 在标签、章节、来源视图里整理。
+6. 使用 MCP 阅读整理或 AI 分析生成总结。
+7. 导出 Markdown 或 JSON 备份。
 
-### 运行测试
+## 项目状态
 
-```bash
-# 单元测试
-npm run test
+当前版本已经支持本地 EPUB 阅读、在线 EPUB 加载、本地划线整理、微信读书划线导入/同步、AI 分析和 Go 后端。
 
-# E2E 测试
-npm run test:e2e
+下一步推荐扩展：
 
-# 覆盖率报告
-npm run test:coverage
-```
-
-## 🤝 贡献指南
-
-欢迎贡献代码、报告问题或提出建议！
-
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
-
-### 代码规范
-
-- 使用 TypeScript 严格模式
-- 遵循 ESLint 规则
-- 使用 Prettier 格式化代码
-- 编写单元测试
-- 添加必要的注释
-
-## 📝 更新日志
-
-### v1.0.0 (2025-01-08)
-
-- ✅ 实现流式按需加载引擎
-- ✅ 实现高精度划线定位系统
-- ✅ 集成 AI 思考辅助管道
-- ✅ 实现 MCP 驱动的笔记分析
-- ✅ 完成离线数据管理体系
-- ✅ 优化虚拟滚动渲染性能
-
-## 🔮 未来规划
-
-- [ ] PDF 格式支持
-- [ ] 音频播放功能（有声书）
-- [ ] 多设备同步
-- [ ] 云端备份
-- [ ] 社区分享功能
-- [ ] 浏览器插件版本
-- [ ] 移动端适配
-- [ ] 离线 PWA 支持
-
-## ❓ 常见问题
-
-### 如何获取 DashScope API Key？
-
-1. 访问 [阿里云 DashScope 控制台](https://dashscope.console.aliyun.com/)
-2. 注册/登录账号
-3. 创建 API Key
-4. 复制到 `.env` 文件
-
-### 为什么划线位置不准确？
-
-- 确保 EPUB 文件格式正确
-- 尝试刷新页面重新加载
-- 检查是否有复杂的 CSS 样式干扰
-- 系统会自动使用多级回退算法修正
-
-### 如何提升大文件加载速度？
-
-- 使用远程加载 + HTTP Range Requests
-- 启用章节预加载
-- 调整缓存大小配置
-
-### MCP 服务器如何配置？
-
-```typescript
-// 方法1：使用默认配置
-await mcpClient.connect();
-
-// 方法2：自定义服务器路径
-await mcpClient.connect('/path/to/custom-mcp-server');
-
-// 方法3：离线模式（不连接 MCP）
-// 系统会自动使用本地分类算法
-```
-
-## 📄 许可证
-
-本项目采用 [MIT License](LICENSE) 开源协议。
-
-## 🙏 致谢
-
-- [Zip.js](https://gildas-lormeau.github.io/zip.js/) - EPUB 解析
-- [LangChain.js](https://js.langchain.com/) - AI 集成
-- [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API) - 离线存储
-- [Vite](https://vitejs.dev/) - 构建工具
-- [React](https://react.dev/) - UI 框架
-
-## 📧 联系方式
-
-- 作者：Your Name
-- 邮箱：your.email@example.com
-- 项目主页：https://github.com/yourusername/epub-reader
-- 问题反馈：https://github.com/yourusername/epub-reader/issues
-
----
-
-**如果这个项目对你有帮助，请给个 ⭐️ Star 支持一下！**
+- 微信读书账号识别
+- 多账号隔离
+- 微信读书划线回跳 EPUB 正文
+- 增量同步和去重
+- 跨设备同步
