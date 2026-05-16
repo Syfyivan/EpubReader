@@ -4,6 +4,8 @@ EpubReader 是一个本地优先的 EPUB 阅读器。它支持本地 EPUB、在�
 
 数据默认保存在浏览器本地 IndexedDB 中，不会自动上传到云端。AI 和微信读书同步功能需要启动本项目自带的 Go 后端。
 
+研发同学可以查看 [技术方案](docs/TECHNICAL_DESIGN.md)。
+
 ## 你可以用它做什么
 
 - 阅读本地 EPUB 文件
