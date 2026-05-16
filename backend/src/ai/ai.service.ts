@@ -44,6 +44,13 @@ export class AIService {
     const apiKey = DashScopeConfig.apiKey;
     const baseURL = DashScopeConfig.baseURL;
 
+    if (!apiKey) {
+      console.warn(
+        "DASHSCOPE_API_KEY is not configured. AI endpoints will return an error until it is set."
+      );
+      return;
+    }
+
     // 初始化普通任务 LLM（使用 qwen-plus）
     this.llm = new ChatOpenAI({
       openAIApiKey: apiKey,
@@ -81,6 +88,12 @@ export class AIService {
     this.summaryChain = this.buildSummaryChain();
     this.insightChain = this.buildInsightChain();
     this.questionChain = this.buildQuestionChain();
+  }
+
+  private ensureConfigured(): void {
+    if (!this.summaryChain || !this.insightChain || !this.questionChain || !this.llmCoder) {
+      throw new Error("DASHSCOPE_API_KEY is not configured");
+    }
   }
 
   /**
@@ -161,6 +174,7 @@ export class AIService {
    */
   async analyzeContent(dto: AnalyzeContentDto): Promise<AIAnalysis> {
     try {
+      this.ensureConfigured();
       const { content } = dto;
 
       // 并行执行多个分析任务
@@ -251,6 +265,7 @@ export class AIService {
    * 生成代码片段（使用代码专用模型）
    */
   async generateCode(dto: GenerateCodeDto): Promise<string> {
+    this.ensureConfigured();
     const { description, language = "typescript" } = dto;
 
     const codeTemplate = PromptTemplate.fromTemplate(`
@@ -284,6 +299,7 @@ export class AIService {
    * 解释代码（使用代码专用模型）
    */
   async explainCode(dto: ExplainCodeDto): Promise<string> {
+    this.ensureConfigured();
     const { code, language = "typescript" } = dto;
 
     const explainTemplate = PromptTemplate.fromTemplate(`
@@ -316,6 +332,7 @@ export class AIService {
    * 代码审查（使用代码专用模型）
    */
   async reviewCode(dto: ReviewCodeDto): Promise<string> {
+    this.ensureConfigured();
     const { code, language = "typescript" } = dto;
 
     const reviewTemplate = PromptTemplate.fromTemplate(`

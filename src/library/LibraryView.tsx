@@ -15,6 +15,11 @@ import type {
   StoredHighlight,
 } from "../storage/StorageManager";
 import type { StorageManager } from "../storage/StorageManager";
+import {
+  mcpApiClient,
+  type MCPBookInfo,
+  type MCPBookNote,
+} from "../api/mcpApiClient";
 import "./LibraryView.css";
 
 const TagCenter = lazy(() => import("./TagCenter"));
@@ -34,6 +39,215 @@ interface ImportResult {
 }
 
 const GROUP_PREVIEW_LIMIT = 3;
+
+type ExternalAnnotation = Record<string, unknown>;
+
+type MCPInsightAction = "sync" | "analysis" | "classify" | "knowledge";
+
+interface KnowledgeConnection {
+  source: string;
+  target: string;
+  weight: number;
+}
+
+interface MCPInsightState {
+  title: string;
+  body?: string;
+  connections?: KnowledgeConnection[];
+  generatedAt: number;
+}
+
+const emptyExternalPosition = () => ({
+  start: { xpath: ".", offset: 0 },
+  end: { xpath: ".", offset: 0 },
+  timestamp: Date.now(),
+});
+
+const firstString = (item: ExternalAnnotation, keys: string[]) => {
+  for (const key of keys) {
+    const value = item[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+};
+
+const normalizeTimestamp = (value: unknown) => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value < 1_000_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+    }
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return Date.now();
+};
+
+const normalizeTags = (value: unknown, fallback: string[]) => {
+  const tags = Array.isArray(value)
+    ? value.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
+    : [];
+  return Array.from(new Set([...fallback, ...tags.map((tag) => tag.trim())]));
+};
+
+const safeIdPart = (value: string) =>
+  encodeURIComponent(value)
+    .replace(/%/g, "")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 36) || Math.random().toString(36).slice(2, 10);
+
+const formatMcpResult = (value: unknown) => {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return JSON.stringify(value, null, 2);
+};
+
+const tokenizeKnowledgeText = (text: string) => {
+  const words = text
+    .toLowerCase()
+    .split(/[\s,，。.!！?？;；:：、"'“”‘’()[\]{}<>《》]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 1);
+
+  if (words.length > 1) {
+    return new Set(words);
+  }
+
+  const compact = text.replace(/\s+/g, "");
+  const shingles: string[] = [];
+  for (let index = 0; index < compact.length - 1; index += 1) {
+    shingles.push(compact.slice(index, index + 2));
+  }
+  return new Set(shingles);
+};
+
+const calculateKnowledgeWeight = (left: string, right: string) => {
+  const leftTokens = tokenizeKnowledgeText(left);
+  const rightTokens = tokenizeKnowledgeText(right);
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return 0;
+  }
+
+  let intersection = 0;
+  leftTokens.forEach((token) => {
+    if (rightTokens.has(token)) {
+      intersection += 1;
+    }
+  });
+
+  const union = new Set([...leftTokens, ...rightTokens]).size;
+  return union === 0 ? 0 : intersection / union;
+};
+
+const buildKnowledgeConnections = (notes: MCPBookNote[]): KnowledgeConnection[] => {
+  const connections: KnowledgeConnection[] = [];
+  for (let leftIndex = 0; leftIndex < notes.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < notes.length; rightIndex += 1) {
+      const weight = calculateKnowledgeWeight(
+        notes[leftIndex].content,
+        notes[rightIndex].content
+      );
+      if (weight >= 0.18) {
+        connections.push({
+          source: notes[leftIndex].id,
+          target: notes[rightIndex].id,
+          weight,
+        });
+      }
+    }
+  }
+
+  return connections.sort((left, right) => right.weight - left.weight).slice(0, 12);
+};
+
+const buildExternalHighlight = (
+  item: ExternalAnnotation,
+  book: BookMetadata,
+  index: number
+): StoredHighlight | null => {
+  const text = firstString(item, [
+    "content",
+    "text",
+    "markText",
+    "abstract",
+    "highlight",
+    "note",
+  ]);
+  if (!text) return null;
+
+  const chapter =
+    firstString(item, ["chapter", "chapterName", "chapterTitle", "title"]) ||
+    "微信读书";
+  const createdAt = normalizeTimestamp(item.createdAt ?? item.createTime ?? item.created_time);
+  const updatedAt = normalizeTimestamp(item.updatedAt ?? item.updateTime ?? item.updated_time);
+  const rawId = firstString(item, ["id", "noteId", "reviewId", "bookmarkId"]) || `${index}-${text}`;
+  const inlineNote = firstString(item, ["review", "comment", "thought"]);
+  const note =
+    inlineNote && inlineNote !== text
+      ? [
+          {
+            id: `wechat-note-${safeIdPart(rawId)}`,
+            content: inlineNote,
+            createdAt,
+            updatedAt,
+            tags: ["微信读书", "想法"],
+          },
+        ]
+      : undefined;
+
+  return {
+    id: `wechat-highlight-${safeIdPart(String(rawId))}`,
+    bookId: book.id,
+    chapterId: `wechat-${safeIdPart(chapter)}`,
+    chapterTitle: chapter,
+    position: emptyExternalPosition(),
+    text,
+    color: "#10b981",
+    tags: normalizeTags(item.tags, ["微信读书", "划线"]),
+    notes: note,
+    source: "wechat",
+    createdAt,
+    updatedAt,
+  };
+};
+
+const buildExternalNote = (
+  item: ExternalAnnotation,
+  book: BookMetadata,
+  index: number
+): BookNote | null => {
+  const content = firstString(item, ["content", "text", "note", "review", "comment"]);
+  if (!content) return null;
+
+  const chapter =
+    firstString(item, ["chapter", "chapterName", "chapterTitle", "title"]) ||
+    undefined;
+  const createdAt = normalizeTimestamp(item.createdAt ?? item.createTime ?? item.created_time);
+  const rawId = firstString(item, ["id", "noteId", "reviewId"]) || `${index}-${content}`;
+
+  return {
+    id: `wechat-note-${safeIdPart(String(rawId))}`,
+    bookId: book.id,
+    title: chapter ?? book.title,
+    content,
+    chapter,
+    tags: normalizeTags(item.tags, ["微信读书", "笔记"]),
+    createdAt,
+    updatedAt: normalizeTimestamp(item.updatedAt ?? item.updateTime ?? item.updated_time),
+    source: "wechat",
+  };
+};
 
 function renderBucketPreview(
   bucket: AnnotationBucket,
@@ -91,12 +305,29 @@ const LibraryView: React.FC<LibraryViewProps> = ({
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showTagCenter, setShowTagCenter] = useState<boolean>(false);
+  const [mcpServerPath, setMcpServerPath] = useState("");
+  const [mcpQuery, setMcpQuery] = useState("");
+  const [mcpBooks, setMcpBooks] = useState<MCPBookInfo[]>([]);
+  const [selectedMcpBookId, setSelectedMcpBookId] = useState("");
+  const [mcpLoading, setMcpLoading] = useState(false);
+  const [mcpSyncing, setMcpSyncing] = useState(false);
+  const [mcpInsightLoading, setMcpInsightLoading] = useState<MCPInsightAction | null>(null);
+  const [mcpInsight, setMcpInsight] = useState<MCPInsightState | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedBook = useMemo(
     () => books.find((book) => book.id === selectedBookId) ?? null,
     [books, selectedBookId]
   );
+  const selectedBookTitle = selectedBook?.title ?? "";
+
+  useEffect(() => {
+    if (selectedBookId && selectedBookTitle) {
+      setMcpQuery(selectedBookTitle);
+      setMcpBooks([]);
+      setSelectedMcpBookId("");
+    }
+  }, [selectedBookId, selectedBookTitle]);
 
   const filteredBooks = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
@@ -184,108 +415,76 @@ const LibraryView: React.FC<LibraryViewProps> = ({
 
   const parseWeReadText = useCallback((content: string) => {
     const lines = content.split(/\r?\n/).map((line) => line.trim());
-    const notes: Array<{ chapter?: string; content: string }> = [];
+    const highlights: Array<{ chapter?: string; content: string; id: string }> = [];
     let currentChapter: string | undefined;
-    lines.forEach((line) => {
+    lines.forEach((line, index) => {
       if (!line) return;
       if (line.startsWith("#")) {
         currentChapter = line.replace(/^#+\s*/, "").trim();
       } else {
-        notes.push({ chapter: currentChapter, content: line });
+        highlights.push({
+          id: `manual-${Date.now()}-${index}`,
+          chapter: currentChapter,
+          content: line.replace(/^[-*>\s◆]+/, "").trim(),
+        });
       }
     });
-    return notes;
+    return highlights;
   }, []);
+
+  const saveExternalAnnotations = useCallback(
+    async (
+      book: BookMetadata,
+      highlights: ExternalAnnotation[],
+      notes: ExternalAnnotation[] = []
+    ): Promise<ImportResult> => {
+      const storedHighlights = highlights
+        .map((item, index) => buildExternalHighlight(item, book, index))
+        .filter((item): item is StoredHighlight => item !== null);
+      const storedNotes = notes
+        .map((item, index) => buildExternalNote(item, book, index))
+        .filter((item): item is BookNote => item !== null);
+
+      await Promise.all([
+        ...storedHighlights.map((highlight) => storageManager.saveHighlight(highlight)),
+        ...storedNotes.map((note) => storageManager.saveNote(note)),
+      ]);
+
+      return {
+        addedHighlights: storedHighlights.length,
+        addedNotes: storedNotes.length,
+      };
+    },
+    [storageManager]
+  );
 
   const importWeReadData = useCallback(
     async (file: File, book: BookMetadata): Promise<ImportResult> => {
       const text = await file.text();
       try {
-        const parsed = JSON.parse(text) as {
-          highlights?: Array<{
-            id: string;
-            content: string;
-            chapter?: string;
-            createdAt?: number;
-            tags?: string[];
-          }>;
-          notes?: Array<{
-            id: string;
-            content: string;
-            chapter?: string;
-            createdAt?: number;
-            tags?: string[];
-          }>;
+        const parsed = JSON.parse(text) as
+          | ExternalAnnotation[]
+          | {
+          highlights?: ExternalAnnotation[];
+          notes?: ExternalAnnotation[];
+          marks?: ExternalAnnotation[];
+          reviews?: ExternalAnnotation[];
         };
 
-        const highlightList = parsed.highlights ?? [];
-        const noteList = parsed.notes ?? [];
+        if (Array.isArray(parsed)) {
+          return await saveExternalAnnotations(book, parsed, []);
+        }
 
-        const mergedNotes = [
-          ...highlightList.map((item) => ({
-            id: `wechat-highlight-${item.id}`,
-            content: item.content,
-            chapter: item.chapter,
-            createdAt: item.createdAt,
-            tags: Array.isArray(item.tags)
-              ? [...item.tags, "微信读书", "划线"]
-              : ["微信读书", "划线"],
-          })),
-          ...noteList.map((item) => ({
-            id: `wechat-note-${item.id}`,
-            content: item.content,
-            chapter: item.chapter,
-            createdAt: item.createdAt,
-            tags: Array.isArray(item.tags)
-              ? [...item.tags, "微信读书"]
-              : ["微信读书"],
-          })),
-        ];
-
-        await Promise.all(
-          mergedNotes.map((item) =>
-            storageManager.saveNote({
-              id: item.id,
-              bookId: book.id,
-              title: item.chapter ?? book.title,
-              content: item.content,
-              chapter: item.chapter,
-              tags: item.tags,
-              createdAt: item.createdAt ?? Date.now(),
-              updatedAt: item.createdAt ?? Date.now(),
-              source: "wechat",
-            })
-          )
+        return await saveExternalAnnotations(
+          book,
+          [...(parsed.highlights ?? []), ...(parsed.marks ?? [])],
+          [...(parsed.notes ?? []), ...(parsed.reviews ?? [])]
         );
-
-        return {
-          addedHighlights: highlightList.length,
-          addedNotes: mergedNotes.length,
-        };
       } catch {
-        const notes = parseWeReadText(text);
-        await Promise.all(
-          notes.map((item, index) =>
-            storageManager.saveNote({
-              id: `wechat-manual-${Date.now()}-${index}`,
-              bookId: book.id,
-              title: item.chapter ?? book.title,
-              content: item.content,
-              chapter: item.chapter,
-              tags: ["微信读书"],
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-              source: "wechat",
-            })
-          )
-        );
-        return {
-          addedHighlights: 0,
-          addedNotes: notes.length,
-        };
+        return await saveExternalAnnotations(book, parseWeReadText(text), []);
       }
     },
-    [parseWeReadText, storageManager]
+    [parseWeReadText, saveExternalAnnotations]
   );
 
   const handleImportWeRead = useCallback(async () => {
@@ -322,6 +521,224 @@ const LibraryView: React.FC<LibraryViewProps> = ({
     [selectedBook, selectedBookId, importWeReadData, loadAnnotations, onRefresh]
   );
 
+  const mcpAnnotationPayload = useMemo<MCPBookNote[]>(() => {
+    if (!organized || !selectedBook) {
+      return [];
+    }
+
+    const items = new Map<string, MCPBookNote>();
+    organized.bySource.forEach((bucket) => {
+      bucket.highlights.forEach((highlight) => {
+        const content = highlight.text.trim();
+        if (!content) return;
+        items.set(`highlight-${highlight.id}`, {
+          id: highlight.id,
+          bookId: selectedBook.id,
+          content,
+          chapter: highlight.chapterTitle || highlight.chapterId,
+          createdAt: highlight.createdAt,
+          updatedAt: highlight.updatedAt,
+          tags: highlight.tags ?? [],
+        });
+      });
+
+      bucket.notes.forEach((note) => {
+        const content = note.content.trim();
+        if (!content) return;
+        items.set(`note-${note.id}`, {
+          id: note.id,
+          bookId: selectedBook.id,
+          content,
+          chapter: note.chapter,
+          createdAt: note.createdAt,
+          updatedAt: note.updatedAt,
+          tags: note.tags,
+        });
+      });
+    });
+
+    return Array.from(items.values());
+  }, [organized, selectedBook]);
+
+  const mcpAnnotationById = useMemo(
+    () => new Map(mcpAnnotationPayload.map((note) => [note.id, note])),
+    [mcpAnnotationPayload]
+  );
+
+  const handleSearchWeReadBooks = useCallback(async () => {
+    if (!selectedBook) return;
+    const query = (mcpQuery || selectedBook.title).trim();
+    if (!query) return;
+
+    setMcpLoading(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const options = { serverPath: mcpServerPath.trim() || undefined };
+      let results = await mcpApiClient.searchBooks(query, options);
+      if (results.length === 0) {
+        const bookshelf = await mcpApiClient.getBookshelf(options);
+        const lowerQuery = query.toLowerCase();
+        results = bookshelf.filter((book) =>
+          `${book.title} ${book.author}`.toLowerCase().includes(lowerQuery)
+        );
+      }
+      setMcpBooks(results);
+      setSelectedMcpBookId(results[0]?.id ?? "");
+      setMessage(
+        results.length > 0
+          ? `找到 ${results.length} 本微信读书候选书籍。`
+          : "未找到匹配的微信读书书籍。"
+      );
+    } catch (err) {
+      console.error("Failed to search WeRead books:", err);
+      setError("搜索微信读书失败，请确认后端已启动且 MCP 服务路径可用。");
+    } finally {
+      setMcpLoading(false);
+    }
+  }, [selectedBook, mcpQuery, mcpServerPath]);
+
+  const handleSyncWeReadHighlights = useCallback(async () => {
+    if (!selectedBook || !selectedMcpBookId) return;
+    const matchedBook = mcpBooks.find((book) => book.id === selectedMcpBookId);
+
+    setMcpSyncing(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const notes = await mcpApiClient.getBookNotes(selectedMcpBookId, {
+        serverPath: mcpServerPath.trim() || undefined,
+      });
+      const result = await saveExternalAnnotations(
+        selectedBook,
+        notes.map((note: MCPBookNote) => ({
+          ...note,
+          chapter: note.chapter || matchedBook?.title,
+          tags: note.tags ?? [],
+        })),
+        []
+      );
+      await onRefresh();
+      if (selectedBookId) {
+        await loadAnnotations(selectedBookId);
+      }
+      setMessage(
+        `已同步微信读书《${matchedBook?.title || selectedMcpBookId}》的 ${result.addedHighlights} 条划线。`
+      );
+    } catch (err) {
+      console.error("Failed to sync WeRead highlights:", err);
+      setError("同步微信读书划线失败，请检查 MCP 服务和书籍选择。");
+    } finally {
+      setMcpSyncing(false);
+    }
+  }, [
+    selectedBook,
+    selectedBookId,
+    selectedMcpBookId,
+    mcpBooks,
+    mcpServerPath,
+    saveExternalAnnotations,
+    onRefresh,
+    loadAnnotations,
+  ]);
+
+  const handleSyncLocalNotesToMcp = useCallback(async () => {
+    if (mcpAnnotationPayload.length === 0) {
+      setError("当前书籍还没有可同步的划线或笔记。");
+      return;
+    }
+
+    setMcpInsightLoading("sync");
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await mcpApiClient.syncNotes(mcpAnnotationPayload, {
+        serverPath: mcpServerPath.trim() || undefined,
+      });
+      setMcpInsight({
+        title: "本地标注同步结果",
+        body: formatMcpResult(result) || `已提交 ${mcpAnnotationPayload.length} 条本地标注。`,
+        generatedAt: Date.now(),
+      });
+    } catch (err) {
+      console.error("Failed to sync local notes to MCP:", err);
+      setError("同步本地标注到 MCP 失败，请检查 MCP 服务路径和 sync_notes 工具。");
+    } finally {
+      setMcpInsightLoading(null);
+    }
+  }, [mcpAnnotationPayload, mcpServerPath]);
+
+  const handleAnalyzeLocalAnnotations = useCallback(async () => {
+    if (mcpAnnotationPayload.length === 0) {
+      setError("当前书籍还没有可分析的划线或笔记。");
+      return;
+    }
+
+    setMcpInsightLoading("analysis");
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await mcpApiClient.analyzeReading(mcpAnnotationPayload, {
+        serverPath: mcpServerPath.trim() || undefined,
+      });
+      setMcpInsight({
+        title: "阅读分析",
+        body: formatMcpResult(result),
+        generatedAt: Date.now(),
+      });
+    } catch (err) {
+      console.error("Failed to analyze local annotations:", err);
+      setError("生成阅读分析失败，请检查 MCP 服务路径和 analyze_reading 工具。");
+    } finally {
+      setMcpInsightLoading(null);
+    }
+  }, [mcpAnnotationPayload, mcpServerPath]);
+
+  const handleClassifyLocalAnnotations = useCallback(async () => {
+    if (mcpAnnotationPayload.length === 0) {
+      setError("当前书籍还没有可分类的划线或笔记。");
+      return;
+    }
+
+    setMcpInsightLoading("classify");
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await mcpApiClient.classifyNotes(mcpAnnotationPayload, {
+        serverPath: mcpServerPath.trim() || undefined,
+      });
+      setMcpInsight({
+        title: "笔记分类",
+        body: formatMcpResult(result),
+        generatedAt: Date.now(),
+      });
+    } catch (err) {
+      console.error("Failed to classify local annotations:", err);
+      setError("分类笔记失败，请检查 MCP 服务路径和 classify_notes 工具。");
+    } finally {
+      setMcpInsightLoading(null);
+    }
+  }, [mcpAnnotationPayload, mcpServerPath]);
+
+  const handleBuildKnowledgeConnections = useCallback(() => {
+    if (mcpAnnotationPayload.length < 2) {
+      setError("至少需要两条划线或笔记才能建立知识关联。");
+      return;
+    }
+
+    const connections = buildKnowledgeConnections(mcpAnnotationPayload);
+    setError(null);
+    setMcpInsight({
+      title: "知识关联",
+      body:
+        connections.length > 0
+          ? undefined
+          : "暂未发现明显关联。可以先同步更多微信读书划线或补充本地笔记。",
+      connections,
+      generatedAt: Date.now(),
+    });
+  }, [mcpAnnotationPayload]);
+
   const highlightCount = useMemo(() => {
     if (!organized) return 0;
     const uniqueHighlightIds = new Set<string>();
@@ -342,6 +759,22 @@ const LibraryView: React.FC<LibraryViewProps> = ({
       })
     );
     return uniqueNoteIds.size;
+  }, [organized]);
+
+  const sourceCounts = useMemo(() => {
+    const counts = { local: 0, wechat: 0 };
+    if (!organized) return counts;
+
+    organized.bySource.forEach((bucket) => {
+      const uniqueHighlightIds = new Set(bucket.highlights.map((highlight) => highlight.id));
+      if (bucket.key === "wechat") {
+        counts.wechat += uniqueHighlightIds.size;
+      } else if (bucket.key === "local") {
+        counts.local += uniqueHighlightIds.size;
+      }
+    });
+
+    return counts;
   }, [organized]);
 
   return (
@@ -426,6 +859,14 @@ const LibraryView: React.FC<LibraryViewProps> = ({
           ) : (
             <>
               <section className="book-summary">
+                {selectedBook.cover && (
+                  <img
+                    src={selectedBook.cover}
+                    alt=""
+                    className="book-cover"
+                    aria-hidden="true"
+                  />
+                )}
                 <div>
                   <h2>{selectedBook.title}</h2>
                   <p className="book-author">{selectedBook.author || "未知作者"}</p>
@@ -489,6 +930,13 @@ const LibraryView: React.FC<LibraryViewProps> = ({
                   <p className="summary-desc">本地划线 & 微信读书</p>
                 </div>
                 <div className="summary-card">
+                  <h3>本地 / 微信划线</h3>
+                  <p className="summary-number">
+                    {sourceCounts.local} / {sourceCounts.wechat}
+                  </p>
+                  <p className="summary-desc">统一进入标签、章节和来源整理</p>
+                </div>
+                <div className="summary-card">
                   <h3>导入微信读书</h3>
                   <button
                     type="button"
@@ -499,6 +947,139 @@ const LibraryView: React.FC<LibraryViewProps> = ({
                     {importing ? "导入中..." : "导入 JSON / TXT"}
                   </button>
                 </div>
+              </section>
+
+              <section className="weread-sync-panel">
+                <div className="weread-sync-header">
+                  <div>
+                    <h3>微信读书 MCP 同步</h3>
+                    <p>
+                      {mcpBooks.length > 0
+                        ? `${mcpBooks.length} 本候选`
+                        : "等待匹配微信读书书籍"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="import-button"
+                    onClick={handleSearchWeReadBooks}
+                    disabled={mcpLoading}
+                  >
+                    {mcpLoading ? "搜索中..." : "搜索微信读书"}
+                  </button>
+                </div>
+                <div className="weread-sync-controls">
+                  <input
+                    type="text"
+                    value={mcpServerPath}
+                    onChange={(e) => setMcpServerPath(e.target.value)}
+                    placeholder="MCP 服务命令，留空使用 mcp-server"
+                    aria-label="MCP 服务命令"
+                  />
+                  <input
+                    type="text"
+                    value={mcpQuery}
+                    onChange={(e) => setMcpQuery(e.target.value)}
+                    placeholder="微信读书搜索关键词"
+                    aria-label="微信读书搜索关键词"
+                  />
+                </div>
+                {mcpBooks.length > 0 && (
+                  <div className="weread-result-row">
+                    <select
+                      value={selectedMcpBookId}
+                      onChange={(e) => setSelectedMcpBookId(e.target.value)}
+                      aria-label="选择微信读书书籍"
+                    >
+                      {mcpBooks.map((book) => (
+                        <option key={book.id} value={book.id}>
+                          {book.title}
+                          {book.author ? ` · ${book.author}` : ""}
+                          {typeof book.notesCount === "number" ? ` · ${book.notesCount} 条` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={handleSyncWeReadHighlights}
+                      disabled={mcpSyncing || !selectedMcpBookId}
+                    >
+                      {mcpSyncing ? "同步中..." : "同步划线"}
+                    </button>
+                  </div>
+                )}
+              </section>
+
+              <section className="mcp-insight-panel">
+                <div className="mcp-insight-header">
+                  <div>
+                    <h3>MCP 阅读整理</h3>
+                    <p>
+                      本地 {sourceCounts.local} 条 · 微信 {sourceCounts.wechat} 条
+                    </p>
+                  </div>
+                  <span>{mcpAnnotationPayload.length} 条标注</span>
+                </div>
+                <div className="mcp-insight-actions">
+                  <button
+                    type="button"
+                    onClick={handleSyncLocalNotesToMcp}
+                    disabled={mcpInsightLoading !== null || mcpAnnotationPayload.length === 0}
+                  >
+                    {mcpInsightLoading === "sync" ? "同步中..." : "同步本地标注"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAnalyzeLocalAnnotations}
+                    disabled={mcpInsightLoading !== null || mcpAnnotationPayload.length === 0}
+                  >
+                    {mcpInsightLoading === "analysis" ? "分析中..." : "阅读分析"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClassifyLocalAnnotations}
+                    disabled={mcpInsightLoading !== null || mcpAnnotationPayload.length === 0}
+                  >
+                    {mcpInsightLoading === "classify" ? "分类中..." : "笔记分类"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleBuildKnowledgeConnections}
+                    disabled={mcpInsightLoading !== null || mcpAnnotationPayload.length < 2}
+                  >
+                    知识关联
+                  </button>
+                </div>
+                {mcpInsight && (
+                  <div className="mcp-insight-result">
+                    <div className="mcp-insight-result-header">
+                      <strong>{mcpInsight.title}</strong>
+                      <span>
+                        {new Date(mcpInsight.generatedAt).toLocaleTimeString("zh-CN", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </div>
+                    {mcpInsight.body && <pre>{mcpInsight.body}</pre>}
+                    {mcpInsight.connections && mcpInsight.connections.length > 0 && (
+                      <ul className="knowledge-list">
+                        {mcpInsight.connections.map((connection) => {
+                          const source = mcpAnnotationById.get(connection.source);
+                          const target = mcpAnnotationById.get(connection.target);
+                          return (
+                            <li key={`${connection.source}-${connection.target}`}>
+                              <span>{source?.content.slice(0, 36) || connection.source}</span>
+                              <strong>{Math.round(connection.weight * 100)}%</strong>
+                              <span>{target?.content.slice(0, 36) || connection.target}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                )}
               </section>
 
               {message && (

@@ -161,6 +161,16 @@
   border-bottom: 1px solid var(--border-color);
 }
 
+.book-cover {
+  width: 88px;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  flex: 0 0 auto;
+  background: var(--bg-secondary);
+}
+
 .book-summary h2 {
   font-size: 2rem;
   margin-bottom: 0.4rem;
@@ -394,6 +404,176 @@
   display: none;
 }
 
+.weread-sync-panel {
+  margin: 0 0 1.5rem;
+  padding: 1.1rem;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  border-radius: var(--radius-lg);
+  background: rgba(16, 185, 129, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.weread-sync-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.weread-sync-header h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+  color: var(--text-primary);
+}
+
+.weread-sync-header p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.weread-sync-controls,
+.weread-result-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr);
+  gap: 0.75rem;
+}
+
+.weread-result-row {
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+}
+
+.weread-sync-controls input,
+.weread-result-row select {
+  width: 100%;
+  padding: 0.65rem 0.8rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.mcp-insight-panel {
+  margin: 0 0 1.5rem;
+  padding: 1.1rem;
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.78);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.mcp-insight-header,
+.mcp-insight-result-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.mcp-insight-header h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+  color: var(--text-primary);
+}
+
+.mcp-insight-header p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.mcp-insight-header span,
+.mcp-insight-result-header span {
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.mcp-insight-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.mcp-insight-actions button {
+  padding: 0.55rem 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.mcp-insight-actions button:hover:not(:disabled) {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.mcp-insight-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.mcp-insight-result {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  padding: 0.9rem;
+}
+
+.mcp-insight-result pre {
+  margin: 0.75rem 0 0;
+  padding: 0.85rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 260px;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.knowledge-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.knowledge-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.65rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.knowledge-list li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-list li strong {
+  color: var(--primary-color);
+  font-size: 0.9rem;
+}
+
 @media (max-width: 1200px) {
   .library-layout {
     grid-template-columns: 280px 1fr;
@@ -429,6 +609,21 @@
     align-items: flex-start;
   }
 
+  .weread-sync-header,
+  .weread-sync-controls,
+  .weread-result-row,
+  .mcp-insight-header,
+  .mcp-insight-result-header,
+  .knowledge-list li {
+    grid-template-columns: 1fr;
+  }
+
+  .weread-sync-header,
+  .mcp-insight-header,
+  .mcp-insight-result-header {
+    display: grid;
+  }
+
   .book-actions {
     width: 100%;
     flex-wrap: wrap;
@@ -438,4 +633,3 @@
     flex: 1 1 120px;
   }
 }
-

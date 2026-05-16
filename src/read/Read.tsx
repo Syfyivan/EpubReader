@@ -27,6 +27,16 @@ type LegacyCaretDocument = Document & {
   caretRangeFromPoint?: (x: number, y: number) => Range | null;
 };
 
+type CodeToolMode = "generate" | "explain" | "review";
+
+const blobToDataUrl = (blob: Blob): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+
 export default function Read({
   file,
   bookId,
@@ -121,12 +131,24 @@ const [fontPanelPos, setFontPanelPos] = useState<{ x: number; y: number }>({
   y: 0,
 });
 const fontButtonRef = useRef<HTMLButtonElement | null>(null);
+const chapterResourceUrlsRef = useRef<string[]>([]);
+const [showCodeTool, setShowCodeTool] = useState(false);
+const [codeToolMode, setCodeToolMode] = useState<CodeToolMode>("generate");
+const [codeToolLanguage, setCodeToolLanguage] = useState("typescript");
+const [codeToolInput, setCodeToolInput] = useState("");
+const [codeToolResult, setCodeToolResult] = useState("");
+const [codeToolLoading, setCodeToolLoading] = useState(false);
 
   useEffect(() => {
     if (storageManager) {
       storageRef.current = storageManager;
     }
   }, [storageManager]);
+
+const clearChapterResourceUrls = useCallback(() => {
+  chapterResourceUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+  chapterResourceUrlsRef.current = [];
+}, []);
 
 useEffect(() => {
   if (typeof window !== "undefined") {
@@ -139,6 +161,61 @@ useEffect(() => {
     contentRef.current.style.setProperty("--reader-font-size", `${fontSize}px`);
   }
 }, [fontSize, chapterRenderKey]);
+
+useEffect(() => {
+  clearChapterResourceUrls();
+
+  if (!parser || !chapterContent || !contentRef.current) {
+    return;
+  }
+
+  let cancelled = false;
+
+  const hydrateChapterImages = async () => {
+    const container = contentRef.current;
+    if (!container) return;
+
+    const images = Array.from(
+      container.querySelectorAll<HTMLImageElement>("img[data-full-path]")
+    );
+
+    await Promise.all(
+      images.map(async (img) => {
+        const resourcePath = img.dataset.fullPath;
+        if (!resourcePath) return;
+
+        try {
+          const blob = await parser.loadResource(resourcePath);
+          if (!blob) {
+            img.classList.add("epub-image-missing");
+            return;
+          }
+
+          const objectUrl = URL.createObjectURL(blob);
+          if (cancelled) {
+            URL.revokeObjectURL(objectUrl);
+            return;
+          }
+
+          chapterResourceUrlsRef.current.push(objectUrl);
+          img.src = objectUrl;
+          img.classList.remove("epub-image-missing");
+          img.classList.add("epub-image-loaded");
+        } catch (error) {
+          console.warn("Failed to load EPUB image resource:", resourcePath, error);
+          img.classList.add("epub-image-missing");
+        }
+      })
+    );
+  };
+
+  hydrateChapterImages();
+
+  return () => {
+    cancelled = true;
+    clearChapterResourceUrls();
+  };
+}, [parser, chapterContent, chapterRenderKey, clearChapterResourceUrls]);
 
 useEffect(() => {
   const handleClick = (e: MouseEvent) => {
@@ -1328,6 +1405,16 @@ useEffect(() => {
           if (epubMeta.author && epubMeta.author !== meta?.author) {
             updates.author = epubMeta.author;
           }
+          if (!meta?.cover) {
+            try {
+              const coverBlob = await epubParser.getCoverImage();
+              if (coverBlob) {
+                updates.cover = await blobToDataUrl(coverBlob);
+              }
+            } catch (error) {
+              console.warn("Failed to load EPUB cover:", error);
+            }
+          }
           if (Object.keys(updates).length > 0) {
             const updated = await storageRef.current.updateBookMetadata(
               bookId,
@@ -1409,6 +1496,7 @@ useEffect(() => {
       if (scrollObserverCleanupRef.current) {
         scrollObserverCleanupRef.current();
       }
+      clearChapterResourceUrls();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file, bookId]); // 移除 loadChapter 依赖，避免无限循环
@@ -2181,6 +2269,29 @@ useEffect(() => {
     }
   };
 
+  const runCodeTool = useCallback(async () => {
+    const input = codeToolInput.trim();
+    if (!input) return;
+
+    setCodeToolLoading(true);
+    setCodeToolResult("");
+    try {
+      const language = codeToolLanguage.trim() || "typescript";
+      const result =
+        codeToolMode === "generate"
+          ? await aiClient.generateCode(input, language)
+          : codeToolMode === "explain"
+          ? await aiClient.explainCode(input, language)
+          : await aiClient.reviewCode(input, language);
+      setCodeToolResult(result);
+    } catch (error) {
+      console.error("AI code tool failed:", error);
+      setCodeToolResult("AI 代码工具调用失败，请确认后端服务和模型配置可用。");
+    } finally {
+      setCodeToolLoading(false);
+    }
+  }, [codeToolInput, codeToolLanguage, codeToolMode]);
+
   const progressDisplay = Math.min(
     100,
     Math.max(0, (bookMetadata?.progress ?? 0) * 100)
@@ -2258,6 +2369,9 @@ useEffect(() => {
         <div className="sidebar-actions">
           <button onClick={handleAnalyzeContent} disabled={!currentChapter}>
             AI 分析
+          </button>
+          <button onClick={() => setShowCodeTool(true)}>
+            AI 代码工具
           </button>
           <button
             ref={fontButtonRef}
@@ -2691,6 +2805,63 @@ useEffect(() => {
                 <div className="analysis-loading">分析生成中...</div>
               )}
             </div>
+          </div>
+        )}
+        {showCodeTool && (
+          <div className="code-tool-panel">
+            <div className="code-tool-header">
+              <div>AI 代码工具</div>
+              <button
+                type="button"
+                className="code-tool-close"
+                onClick={() => setShowCodeTool(false)}
+                title="关闭"
+              >
+                ×
+              </button>
+            </div>
+            <div className="code-tool-controls">
+              <select
+                value={codeToolMode}
+                onChange={(e) => {
+                  setCodeToolMode(e.target.value as CodeToolMode);
+                  setCodeToolResult("");
+                }}
+                aria-label="选择代码工具模式"
+              >
+                <option value="generate">生成代码</option>
+                <option value="explain">解释代码</option>
+                <option value="review">审查代码</option>
+              </select>
+              <input
+                type="text"
+                value={codeToolLanguage}
+                onChange={(e) => setCodeToolLanguage(e.target.value)}
+                aria-label="代码语言"
+                placeholder="typescript"
+              />
+            </div>
+            <textarea
+              className="code-tool-input"
+              value={codeToolInput}
+              onChange={(e) => setCodeToolInput(e.target.value)}
+              placeholder={
+                codeToolMode === "generate"
+                  ? "描述你想生成的代码..."
+                  : "粘贴需要处理的代码..."
+              }
+            />
+            <button
+              type="button"
+              className="code-tool-run"
+              onClick={runCodeTool}
+              disabled={codeToolLoading || !codeToolInput.trim()}
+            >
+              {codeToolLoading ? "处理中..." : "运行"}
+            </button>
+            {codeToolResult && (
+              <pre className="code-tool-result">{codeToolResult}</pre>
+            )}
           </div>
         )}
         {showFontPanel && (

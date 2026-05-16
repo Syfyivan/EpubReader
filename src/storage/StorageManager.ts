@@ -705,9 +705,23 @@ export class StorageManager {
       if (highlights.length > 0) {
         markdown += `### 划线 (${highlights.length}条)\n\n`;
         highlights.forEach((highlight, index) => {
+          const sourceLabel = highlight.source === "wechat" ? "微信读书" : "本地";
+          const chapterLabel = highlight.chapterTitle || highlight.chapterId;
           markdown += `${index + 1}. ${highlight.text}\n`;
+          markdown += `   - 来源: ${sourceLabel}\n`;
+          if (chapterLabel) {
+            markdown += `   - 章节: ${chapterLabel}\n`;
+          }
           if (highlight.note) {
             markdown += `   > ${highlight.note}\n`;
+          }
+          if (highlight.notes && highlight.notes.length > 0) {
+            highlight.notes.forEach((note) => {
+              markdown += `   > ${note.content}\n`;
+              if (note.tags && note.tags.length > 0) {
+                markdown += `   > 标签: ${note.tags.join(", ")}\n`;
+              }
+            });
           }
         });
         markdown += "\n";
@@ -747,6 +761,14 @@ export class StorageManager {
           name: "划线",
           children: highlights.map((h) => ({
             name: h.text.substring(0, 50),
+            children: [
+              { name: h.source === "wechat" ? "微信读书" : "本地" },
+              ...(h.chapterTitle ? [{ name: h.chapterTitle }] : []),
+              ...((h.notes ?? []).map((note) => ({
+                name: note.content.substring(0, 50),
+                children: (note.tags ?? []).map((tag) => ({ name: tag })),
+              }))),
+            ],
           })),
         },
       ],

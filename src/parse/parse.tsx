@@ -522,8 +522,18 @@ export class EpubParser {
     
     // 移除重复的斜杠
     normalized = normalized.replace(/\/+/g, '/');
+
+    const parts: string[] = [];
+    normalized.split('/').forEach((part) => {
+      if (!part || part === '.') return;
+      if (part === '..') {
+        parts.pop();
+        return;
+      }
+      parts.push(part);
+    });
     
-    return normalized;
+    return parts.join('/');
   }
 
   /**
@@ -585,9 +595,12 @@ export class EpubParser {
       const src = img.getAttribute('src');
       if (src && !src.startsWith('http') && !src.startsWith('data:')) {
         const fullPath = this.normalizePath(chapterDir + src);
-        // 这里可以转换为 blob URL 或 base64
         img.setAttribute('data-original-src', src);
         img.setAttribute('data-full-path', fullPath);
+        img.setAttribute(
+          'src',
+          'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
+        );
       }
     });
 
@@ -655,7 +668,7 @@ export class EpubParser {
         return null;
       }
       
-      return await this.loadResource(this.metadata.cover!);
+      return await this.loadResource(coverPath);
     } catch (error) {
       console.warn('⚠️ 加载封面失败:', error);
       return null;

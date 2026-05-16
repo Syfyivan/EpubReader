@@ -399,6 +399,18 @@
   display: block;
 }
 
+.chapter-content img.epub-image-missing {
+  min-height: 120px;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(148, 163, 184, 0.15),
+    rgba(148, 163, 184, 0.15) 8px,
+    rgba(148, 163, 184, 0.25) 8px,
+    rgba(148, 163, 184, 0.25) 16px
+  );
+  box-shadow: none;
+}
+
 /* 章节导航按钮 */
 .chapter-navigation {
   display: flex;
@@ -599,6 +611,96 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 0.95rem;
   line-height: 1.6;
+}
+
+.code-tool-panel {
+  position: fixed;
+  right: 2rem;
+  bottom: 2rem;
+  z-index: 1080;
+  width: min(560px, calc(100vw - 2rem));
+  max-height: min(720px, calc(100vh - 4rem));
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+}
+
+.code-tool-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+}
+
+.code-tool-close {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 1.25rem;
+  cursor: pointer;
+}
+
+.code-tool-controls {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) 1fr;
+  gap: 0.75rem;
+}
+
+.code-tool-controls select,
+.code-tool-controls input,
+.code-tool-input {
+  width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.code-tool-controls select,
+.code-tool-controls input {
+  padding: 0.6rem 0.75rem;
+}
+
+.code-tool-input {
+  min-height: 150px;
+  resize: vertical;
+  padding: 0.8rem;
+  line-height: 1.5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.code-tool-run {
+  align-self: flex-start;
+  padding: 0.65rem 1.15rem;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--primary-color);
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.code-tool-run:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.code-tool-result {
+  margin: 0;
+  padding: 0.9rem;
+  max-height: 300px;
+  overflow: auto;
+  border-radius: var(--radius-md);
+  background: #111827;
+  color: #f9fafb;
+  white-space: pre-wrap;
+  line-height: 1.55;
+  font-size: 0.9rem;
 }
 
 /* 下划线样式 */
@@ -1004,4 +1106,3 @@
 .ai-analysis::-webkit-scrollbar-thumb:hover {
   background: var(--text-secondary);
 }
-

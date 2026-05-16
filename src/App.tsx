@@ -13,6 +13,8 @@ type View = "home" | "library" | "reader";
 const LAST_VIEW_KEY = "epub-reader:lastView";
 const LAST_BOOK_KEY = "epub-reader:lastBookId";
 
+const isRemoteBookPath = (path?: string) => /^https?:\/\//i.test(path ?? "");
+
 function App() {
   const storageRef = useRef<StorageManager | null>(null);
   const [initialized, setInitialized] = useState(false);
@@ -51,6 +53,24 @@ function App() {
     });
   }, []);
 
+  const getBookSource = useCallback(
+    async (manager: StorageManager, book: BookMetadata): Promise<File | string | null> => {
+      const record = await manager.getBookFile(book.id);
+      if (record) {
+        return new File([record.file], record.fileName, {
+          type: record.mimeType,
+        });
+      }
+
+      if (isRemoteBookPath(book.filePath)) {
+        return book.filePath!;
+      }
+
+      return null;
+    },
+    []
+  );
+
   const restoreLastSession = useCallback(
     async (manager: StorageManager) => {
       try {
@@ -58,21 +78,20 @@ function App() {
         const lastBookId = window.localStorage.getItem(LAST_BOOK_KEY);
 
         if (lastBookId) {
-          const [book, fileRecord] = await Promise.all([
-            manager.getBook(lastBookId),
-            manager.getBookFile(lastBookId),
-          ]);
+          const book = await manager.getBook(lastBookId);
 
           if (book) {
             setActiveBook(book);
           }
 
-          if (lastView === "reader" && book && fileRecord) {
-            const restoredFile = new File([fileRecord.file], fileRecord.fileName, {
-              type: fileRecord.mimeType,
-            });
+          if (lastView === "reader" && book) {
+            const restoredSource = await getBookSource(manager, book);
+            if (!restoredSource) {
+              setView("home");
+              return;
+            }
 
-            setFile(restoredFile);
+            setFile(restoredSource);
             setBookId(book.id);
             setInitialChapterId(book.currentChapterId);
             setInitialScrollTop(book.scrollTop);
@@ -93,7 +112,7 @@ function App() {
         setRestoring(false);
       }
     },
-    []
+    [getBookSource]
   );
 
   useEffect(() => {
@@ -140,15 +159,14 @@ function App() {
         if (existed) {
           const ok = window.confirm(`图书馆中已存在《${incomingTitle}》，是否直接打开？`);
           if (ok) {
-            const record = await manager.getBookFile(existed.id);
-            if (!record) {
+            const source = await getBookSource(manager, existed);
+            if (!source) {
               setError("已存在记录但缺少文件，请重新导入该书籍。");
               return;
             }
-            const restoredFile = new File([record.file], record.fileName, { type: record.mimeType });
             setActiveBook(existed);
             setBookId(existed.id);
-            setFile(restoredFile);
+            setFile(source);
             setInitialChapterId(existed.currentChapterId);
             setInitialScrollTop(existed.scrollTop);
             setView("reader");
@@ -185,7 +203,7 @@ function App() {
         setError("加载本地文件失败，请重试或检查文件是否损坏。");
       }
     },
-    [ensureStorage, refreshLibrary]
+    [ensureStorage, refreshLibrary, getBookSource]
   );
 
   const handleUrlLoad = useCallback(
@@ -203,29 +221,20 @@ function App() {
         if (existed) {
           const ok = window.confirm(`图书馆中已存在《${incomingTitle}》，是否直接打开？`);
           if (ok) {
-            const record = await manager.getBookFile(existed.id);
-            if (!record) {
-              setError("已存在记录但缺少文件，请重新导入该书籍。");
+            const source = await getBookSource(manager, existed);
+            if (!source) {
+              setError("已存在记录但缺少文件或远程链接，请重新导入该书籍。");
               return;
             }
-            const restoredFile = new File([record.file], record.fileName, { type: record.mimeType });
             setActiveBook(existed);
             setBookId(existed.id);
-            setFile(restoredFile);
+            setFile(source);
             setInitialChapterId(existed.currentChapterId);
             setInitialScrollTop(existed.scrollTop);
             setView("reader");
             return;
           }
         }
-        const response = await fetch(url);
-        if (!response.ok) {
-          throw new Error(`无法下载在线 EPUB：${response.status}`);
-        }
-        const blob = await response.blob();
-        const file = new File([blob], fileName, {
-          type: blob.type || "application/epub+zip",
-        });
 
         const id = `book-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const now = Date.now();
@@ -240,24 +249,21 @@ function App() {
           updatedAt: now,
         };
 
-        await Promise.all([
-          manager.saveBook(metadata),
-          manager.saveBookFile(id, file, fileName, file.type),
-        ]);
+        await manager.saveBook(metadata);
 
         setActiveBook(metadata);
         setBookId(id);
-        setFile(file);
+        setFile(url);
         setInitialChapterId(undefined);
         setInitialScrollTop(undefined);
         setView("reader");
         await refreshLibrary();
       } catch (err) {
         console.error("Failed to load remote EPUB:", err);
-        setError("加载在线 EPUB 失败，请确认链接有效并支持 CORS 访问。");
+        setError("加载在线 EPUB 失败，请确认链接有效、支持 CORS，并允许 Range 请求。");
       }
     },
-    [ensureStorage, refreshLibrary]
+    [ensureStorage, refreshLibrary, getBookSource]
   );
 
   const handleOpenBook = useCallback(
@@ -265,19 +271,15 @@ function App() {
       try {
         setError(null);
         const manager = await ensureStorage();
-        const record = await manager.getBookFile(book.id);
-        if (!record) {
-          setError("未找到书籍文件，请重新导入该书籍。");
+        const source = await getBookSource(manager, book);
+        if (!source) {
+          setError("未找到书籍文件或远程链接，请重新导入该书籍。");
           return;
         }
 
-        const restoredFile = new File([record.file], record.fileName, {
-          type: record.mimeType,
-        });
-
         setActiveBook(book);
         setBookId(book.id);
-        setFile(restoredFile);
+        setFile(source);
         setInitialChapterId(book.currentChapterId);
         setInitialScrollTop(book.scrollTop);
         setView("reader");
@@ -286,7 +288,7 @@ function App() {
         setError("打开书籍失败，请重试。");
       }
     },
-    [ensureStorage]
+    [ensureStorage, getBookSource]
   );
 
   const handleReaderExit = useCallback(async () => {
