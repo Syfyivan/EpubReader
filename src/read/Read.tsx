@@ -426,11 +426,11 @@ const updatePagedMetrics = useCallback(() => {
     return;
   }
 
-	  setPageCount(1);
-	  const scrollContainer = scrollContainerRef.current || container;
-	  const scrollable = Math.max(1, scrollContainer.scrollHeight - scrollContainer.clientHeight);
-	  setChapterProgress(Math.round((scrollContainer.scrollTop / scrollable) * 100));
-	}, [pageIndex, readingMode]);
+  setPageCount(1);
+  const scrollContainer = scrollContainerRef.current || container;
+  const scrollable = Math.max(1, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+  setChapterProgress(Math.round((scrollContainer.scrollTop / scrollable) * 100));
+}, [pageIndex, readingMode]);
 
 useLayoutEffect(() => {
   updatePagedMetrics();
@@ -440,8 +440,8 @@ useLayoutEffect(() => {
 }, [chapterContent, chapterRenderKey, fontSize, readingMode, pageIndex, updatePagedMetrics]);
 
 useEffect(() => {
-	  const container = readingMode === "paged" ? contentRef.current : scrollContainerRef.current;
-	  if (!container || readingMode === "paged") return;
+  const container = readingMode === "paged" ? contentRef.current : scrollContainerRef.current;
+  if (!container || readingMode === "paged") return;
 
   const handleScroll = () => {
     const scrollable = Math.max(1, container.scrollHeight - container.clientHeight);
@@ -2595,13 +2595,20 @@ useEffect(() => {
     }
   }, [codeToolInput, codeToolLanguage, codeToolMode]);
 
-	  const progressDisplay = Math.min(
-	    100,
-	    Math.max(0, (bookMetadata?.progress ?? 0) * 100)
-	  ).toFixed(1);
-	  const estimatedReadMinutes = chapterContent
-	    ? Math.max(1, Math.ceil(stripHtml(chapterContent).length / 500))
-	    : 0;
+  const progressDisplay = Math.min(
+    100,
+    Math.max(0, (bookMetadata?.progress ?? 0) * 100)
+  ).toFixed(1);
+  const estimatedReadMinutes = chapterContent
+    ? Math.max(1, Math.ceil(stripHtml(chapterContent).length / 500))
+    : 0;
+  const footnoteStyle =
+    footnotePopup && typeof window !== "undefined"
+      ? {
+          left: `${Math.max(12, Math.min(footnotePopup.x, window.innerWidth - 360))}px`,
+          top: `${Math.max(12, Math.min(footnotePopup.y + 12, window.innerHeight - 240))}px`,
+        }
+      : undefined;
 
   if (loading && !parser) {
     return <div className="loading">加载中...</div>;
@@ -2626,13 +2633,13 @@ useEffect(() => {
         </div>
         <div className="topbar-meta">
           <span>进度 {progressDisplay}%</span>
-	          {currentChapter && (
-	            <span>
-	              章节 {chapterProgress}%
-	              {readingMode === "paged" ? ` · ${pageIndex + 1}/${pageCount} 页` : ""}
-	            </span>
-	          )}
-	          {estimatedReadMinutes > 0 && <span>预计 {estimatedReadMinutes} 分钟</span>}
+          {currentChapter && (
+            <span>
+              章节 {chapterProgress}%
+              {readingMode === "paged" ? ` · ${pageIndex + 1}/${pageCount} 页` : ""}
+            </span>
+          )}
+          {estimatedReadMinutes > 0 && <span>预计 {estimatedReadMinutes} 分钟</span>}
           {bookMetadata?.lastReadAt && (
             <span>
               最近阅读 {new Date(bookMetadata.lastReadAt).toLocaleString("zh-CN")}
@@ -2873,13 +2880,13 @@ useEffect(() => {
                   const href = link.getAttribute('href');
                   if (!href) return false;
 
-	                  if (link.dataset.epubFootnoteRef === "true" && href.startsWith("#")) {
-	                    const noteId = decodeURIComponent(href.slice(1));
-	                    const candidate = contentRef.current?.ownerDocument.getElementById(noteId);
-	                    const noteTarget =
-	                      candidate && contentRef.current?.contains(candidate)
-	                        ? candidate
-	                        : null;
+                  if (link.dataset.epubFootnoteRef === "true" && href.startsWith("#")) {
+                    const noteId = decodeURIComponent(href.slice(1));
+                    const candidate = contentRef.current?.ownerDocument.getElementById(noteId);
+                    const noteTarget =
+                      candidate && contentRef.current?.contains(candidate)
+                        ? candidate
+                        : null;
                     if (noteTarget) {
                       const mouseEvent = e as unknown as MouseEvent;
                       setFootnotePopup({
@@ -2952,10 +2959,7 @@ useEffect(() => {
             {footnotePopup && (
               <div
                 className="footnote-popup"
-                style={{
-                  left: `${Math.min(footnotePopup.x, window.innerWidth - 360)}px`,
-                  top: `${Math.min(footnotePopup.y + 12, window.innerHeight - 240)}px`,
-                }}
+                style={footnoteStyle}
               >
                 <button
                   type="button"

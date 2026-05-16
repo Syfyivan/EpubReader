@@ -419,6 +419,9 @@ npm run build:backend
 # 代码检查
 npm run lint
 
+# 前端浏览器冒烟测试
+npm run test:e2e
+
 # Go 后端测试
 cd backend && go test ./...
 ```

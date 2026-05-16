@@ -60,3 +60,5 @@ coverage
 # Testing
 __tests__/__snapshots__/
 .jest/
+test-results/
+playwright-report/

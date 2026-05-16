@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build",
     "build:backend": "cd backend && rm -rf dist && mkdir -p dist && go build -o dist/epub-reader-backend .",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@langchain/core": "^0.3.79",
@@ -31,6 +32,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
+    "@playwright/test": "^1.60.0",
     "@types/node": "^24.6.0",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",

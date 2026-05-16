@@ -730,8 +730,40 @@ export class EpubParser {
     );
     await Promise.all(stylesheetLinks.map((link) => inlineStylesheet(link)));
 
-    doc.querySelectorAll('a[href^="#"], a[epub\\:type~="noteref"], a[type~="noteref"]').forEach((link) => {
-      link.setAttribute('data-epub-footnote-ref', 'true');
+    doc.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((link) => {
+      const href = link.getAttribute('href') || '';
+      const explicitType = [
+        link.getAttribute('epub:type'),
+        link.getAttribute('type'),
+        link.getAttribute('role'),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      const hash = href.startsWith('#') ? href.slice(1) : '';
+      const decodedHash = (() => {
+        try {
+          return decodeURIComponent(hash);
+        } catch {
+          return hash;
+        }
+      })();
+      const target = decodedHash ? doc.getElementById(decodedHash) : null;
+      const targetType = target
+        ? [
+            target.getAttribute('epub:type'),
+            target.getAttribute('type'),
+            target.getAttribute('role'),
+            target.tagName,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase()
+        : '';
+      const evidence = `${href} ${explicitType} ${targetType}`;
+      if (/(note|noteref|footnote|endnote|doc-noteref|doc-footnote)/i.test(evidence)) {
+        link.setAttribute('data-epub-footnote-ref', 'true');
+      }
     });
 
     // 提取 body 内容

@@ -790,10 +790,13 @@ Range 加载需要远端支持：
 
 ## 9. 测试策略
 
-当前已有 Go 后端基础测试：
+当前已有测试：
 
 - `backend/ai_test.go`
 - `backend/mcp_test.go`
+- `tests/e2e/library.spec.ts`
+
+`library.spec.ts` 会种入 IndexedDB 测试数据，验证图书馆全库搜索和跨书知识图谱入口。
 
 建议补充：
 
@@ -853,6 +856,12 @@ Lint：
 
 ```bash
 npm run lint
+```
+
+Playwright 冒烟测试：
+
+```bash
+npm run test:e2e
 ```
 
 ## 11. 研发演进路线

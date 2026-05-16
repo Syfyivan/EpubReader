@@ -169,6 +169,7 @@ export class StorageManager {
   private dbName = "epub-reader-db";
   private version = 3;
   private fullTextIndexCache: Map<string, BookTextIndexEntry[]> = new Map();
+  private fullTextIndexInFlight: Map<string, Promise<BookTextIndexEntry[]>> = new Map();
 
   /**
    * 初始化数据库
@@ -748,44 +749,60 @@ export class StorageManager {
   private async buildBookTextIndex(book: BookMetadata): Promise<BookTextIndexEntry[]> {
     const cached = this.fullTextIndexCache.get(book.id);
     if (cached) return cached;
+    const inFlight = this.fullTextIndexInFlight.get(book.id);
+    if (inFlight) return inFlight;
 
-    const record = await this.getBookFile(book.id);
-    const source =
-      record
-        ? new File([record.file], record.fileName, {
-            type: record.mimeType || "application/epub+zip",
-          })
-        : /^https?:\/\//i.test(book.filePath ?? "")
-        ? book.filePath!
-        : null;
+    const buildPromise = (async () => {
+      const record = await this.getBookFile(book.id);
+      const source =
+        record
+          ? new File([record.file], record.fileName, {
+              type: record.mimeType || "application/epub+zip",
+            })
+          : /^https?:\/\//i.test(book.filePath ?? "")
+          ? book.filePath!
+          : null;
 
-    if (!source) {
-      this.fullTextIndexCache.set(book.id, []);
-      return [];
-    }
-
-    const parser = new EpubParser();
-    try {
-      await parser.load(source);
-      const entries: BookTextIndexEntry[] = [];
-      const chapters = parser.getChapters();
-      for (const chapter of chapters) {
-        const html = await parser.loadChapter(chapter.id);
-        const text = this.stripHtml(html);
-        if (!text) continue;
-        entries.push({
-          bookId: book.id,
-          bookTitle: book.title,
-          chapterId: chapter.id,
-          chapterTitle: chapter.title,
-          text,
-        });
+      if (!source) {
+        this.fullTextIndexCache.set(book.id, []);
+        return [];
       }
-      this.fullTextIndexCache.set(book.id, entries);
-      return entries;
+
+      const parser = new EpubParser();
+      try {
+        await parser.load(source);
+        const entries: BookTextIndexEntry[] = [];
+        const chapters = parser.getChapters();
+        for (const chapter of chapters) {
+          const html = await parser.loadChapter(chapter.id);
+          const text = this.stripHtml(html);
+          if (!text) continue;
+          entries.push({
+            bookId: book.id,
+            bookTitle: book.title,
+            chapterId: chapter.id,
+            chapterTitle: chapter.title,
+            text,
+          });
+        }
+        this.fullTextIndexCache.set(book.id, entries);
+        return entries;
+      } finally {
+        await parser.close();
+      }
+    })();
+
+    this.fullTextIndexInFlight.set(book.id, buildPromise);
+    try {
+      return await buildPromise;
     } finally {
-      await parser.close();
+      this.fullTextIndexInFlight.delete(book.id);
     }
+  }
+
+  private clearBookTextIndex(bookId: string) {
+    this.fullTextIndexCache.delete(bookId);
+    this.fullTextIndexInFlight.delete(bookId);
   }
 
   private addGraphEdge(
@@ -1011,7 +1028,7 @@ export class StorageManager {
       updatedAt: Date.now(),
     });
     await tx.done;
-    this.fullTextIndexCache.delete(bookId);
+    this.clearBookTextIndex(bookId);
   }
 
   /**
@@ -1055,7 +1072,7 @@ export class StorageManager {
     ]);
 
     await tx.done;
-    this.fullTextIndexCache.delete(bookId);
+    this.clearBookTextIndex(bookId);
   }
 
   /**
@@ -1067,7 +1084,7 @@ export class StorageManager {
     const tx = this.db!.transaction("bookFiles", "readwrite");
     await tx.store.delete(bookId);
     await tx.done;
-    this.fullTextIndexCache.delete(bookId);
+    this.clearBookTextIndex(bookId);
   }
 
   /**
@@ -1399,5 +1416,6 @@ export class StorageManager {
 
     await Promise.all([highlightTx.done, noteTx.done, bookTx.done, fileTx.done]);
     this.fullTextIndexCache.clear();
+    this.fullTextIndexInFlight.clear();
   }
 }
