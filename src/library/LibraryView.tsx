@@ -1,4 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   AnnotationBucket,
   BookMetadata,
@@ -8,7 +16,8 @@ import type {
 } from "../storage/StorageManager";
 import type { StorageManager } from "../storage/StorageManager";
 import "./LibraryView.css";
-import TagCenter from "./TagCenter";
+
+const TagCenter = lazy(() => import("./TagCenter"));
 
 interface LibraryViewProps {
   books: BookMetadata[];
@@ -173,7 +182,7 @@ const LibraryView: React.FC<LibraryViewProps> = ({
     setMessage("书籍已删除。");
   }, [selectedBook, storageManager, onRefresh]);
 
-  const parseWeReadText = (content: string) => {
+  const parseWeReadText = useCallback((content: string) => {
     const lines = content.split(/\r?\n/).map((line) => line.trim());
     const notes: Array<{ chapter?: string; content: string }> = [];
     let currentChapter: string | undefined;
@@ -186,98 +195,98 @@ const LibraryView: React.FC<LibraryViewProps> = ({
       }
     });
     return notes;
-  };
+  }, []);
 
-  const importWeReadData = async (
-    file: File,
-    book: BookMetadata
-  ): Promise<ImportResult> => {
-    const text = await file.text();
-    try {
-      const parsed = JSON.parse(text) as {
-        highlights?: Array<{
-          id: string;
-          content: string;
-          chapter?: string;
-          createdAt?: number;
-          tags?: string[];
-        }>;
-        notes?: Array<{
-          id: string;
-          content: string;
-          chapter?: string;
-          createdAt?: number;
-          tags?: string[];
-        }>;
-      };
+  const importWeReadData = useCallback(
+    async (file: File, book: BookMetadata): Promise<ImportResult> => {
+      const text = await file.text();
+      try {
+        const parsed = JSON.parse(text) as {
+          highlights?: Array<{
+            id: string;
+            content: string;
+            chapter?: string;
+            createdAt?: number;
+            tags?: string[];
+          }>;
+          notes?: Array<{
+            id: string;
+            content: string;
+            chapter?: string;
+            createdAt?: number;
+            tags?: string[];
+          }>;
+        };
 
-      const highlightList = parsed.highlights ?? [];
-      const noteList = parsed.notes ?? [];
+        const highlightList = parsed.highlights ?? [];
+        const noteList = parsed.notes ?? [];
 
-      const mergedNotes = [
-        ...highlightList.map((item) => ({
-          id: `wechat-highlight-${item.id}`,
-          content: item.content,
-          chapter: item.chapter,
-          createdAt: item.createdAt,
-          tags: Array.isArray(item.tags)
-            ? [...item.tags, "微信读书", "划线"]
-            : ["微信读书", "划线"],
-        })),
-        ...noteList.map((item) => ({
-          id: `wechat-note-${item.id}`,
-          content: item.content,
-          chapter: item.chapter,
-          createdAt: item.createdAt,
-          tags: Array.isArray(item.tags)
-            ? [...item.tags, "微信读书"]
-            : ["微信读书"],
-        })),
-      ];
-
-      await Promise.all(
-        mergedNotes.map((item) =>
-          storageManager.saveNote({
-            id: item.id,
-            bookId: book.id,
-            title: item.chapter ?? book.title,
+        const mergedNotes = [
+          ...highlightList.map((item) => ({
+            id: `wechat-highlight-${item.id}`,
             content: item.content,
             chapter: item.chapter,
-            tags: item.tags,
-            createdAt: item.createdAt ?? Date.now(),
-            updatedAt: item.createdAt ?? Date.now(),
-            source: "wechat",
-          })
-        )
-      );
-
-      return {
-        addedHighlights: highlightList.length,
-        addedNotes: mergedNotes.length,
-      };
-    } catch {
-      const notes = parseWeReadText(text);
-      await Promise.all(
-        notes.map((item, index) =>
-          storageManager.saveNote({
-            id: `wechat-manual-${Date.now()}-${index}`,
-            bookId: book.id,
-            title: item.chapter ?? book.title,
+            createdAt: item.createdAt,
+            tags: Array.isArray(item.tags)
+              ? [...item.tags, "微信读书", "划线"]
+              : ["微信读书", "划线"],
+          })),
+          ...noteList.map((item) => ({
+            id: `wechat-note-${item.id}`,
             content: item.content,
             chapter: item.chapter,
-            tags: ["微信读书"],
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            source: "wechat",
-          })
-        )
-      );
-      return {
-        addedHighlights: 0,
-        addedNotes: notes.length,
-      };
-    }
-  };
+            createdAt: item.createdAt,
+            tags: Array.isArray(item.tags)
+              ? [...item.tags, "微信读书"]
+              : ["微信读书"],
+          })),
+        ];
+
+        await Promise.all(
+          mergedNotes.map((item) =>
+            storageManager.saveNote({
+              id: item.id,
+              bookId: book.id,
+              title: item.chapter ?? book.title,
+              content: item.content,
+              chapter: item.chapter,
+              tags: item.tags,
+              createdAt: item.createdAt ?? Date.now(),
+              updatedAt: item.createdAt ?? Date.now(),
+              source: "wechat",
+            })
+          )
+        );
+
+        return {
+          addedHighlights: highlightList.length,
+          addedNotes: mergedNotes.length,
+        };
+      } catch {
+        const notes = parseWeReadText(text);
+        await Promise.all(
+          notes.map((item, index) =>
+            storageManager.saveNote({
+              id: `wechat-manual-${Date.now()}-${index}`,
+              bookId: book.id,
+              title: item.chapter ?? book.title,
+              content: item.content,
+              chapter: item.chapter,
+              tags: ["微信读书"],
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              source: "wechat",
+            })
+          )
+        );
+        return {
+          addedHighlights: 0,
+          addedNotes: notes.length,
+        };
+      }
+    },
+    [parseWeReadText, storageManager]
+  );
 
   const handleImportWeRead = useCallback(async () => {
     if (!selectedBook) return;
@@ -310,7 +319,7 @@ const LibraryView: React.FC<LibraryViewProps> = ({
         setImporting(false);
       }
     },
-    [selectedBook, selectedBookId, loadAnnotations, onRefresh]
+    [selectedBook, selectedBookId, importWeReadData, loadAnnotations, onRefresh]
   );
 
   const highlightCount = useMemo(() => {
@@ -609,10 +618,12 @@ const LibraryView: React.FC<LibraryViewProps> = ({
       />
 
       {showTagCenter && (
-        <TagCenter
-          storageManager={storageManager}
-          onClose={() => setShowTagCenter(false)}
-        />
+        <Suspense fallback={null}>
+          <TagCenter
+            storageManager={storageManager}
+            onClose={() => setShowTagCenter(false)}
+          />
+        </Suspense>
       )}
     </div>
   );

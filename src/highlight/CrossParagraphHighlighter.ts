@@ -105,7 +105,7 @@ export class CrossParagraphHighlighter {
     try {
       range.surroundContents(wrapper);
       return [wrapper];
-    } catch (e) {
+    } catch {
       // 使用 fallback 方法
       const contents = range.cloneContents();
       wrapper.appendChild(contents);
@@ -185,7 +185,7 @@ export class CrossParagraphHighlighter {
       try {
         textRange.surroundContents(wrapper);
         wrappers.push(wrapper);
-      } catch (e) {
+      } catch {
         const contents = textRange.cloneContents();
         wrapper.appendChild(contents);
         textRange.deleteContents();

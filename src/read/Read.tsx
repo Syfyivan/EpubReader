@@ -23,6 +23,10 @@ interface ReadProps {
   initialScrollTop?: number;
 }
 
+type LegacyCaretDocument = Document & {
+  caretRangeFromPoint?: (x: number, y: number) => Range | null;
+};
+
 export default function Read({
   file,
   bookId,
@@ -65,10 +69,8 @@ const [chapterContent, setChapterContent] = useState<string>('');
   const selectionRAFRef = useRef<number | null>(null);
   const isDraggingRef = useRef<boolean>(false); // 防止拖动时递归调用
 
-  const contentRef = useRef<HTMLElement | null>(null);
-const hostContainerRef = useRef<HTMLElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
 const iframeRef = useRef<HTMLIFrameElement | null>(null);
-const getContentDocument = () => (iframeRef.current?.contentDocument || document);
 const getContentWindow = () => (iframeRef.current?.contentWindow || window);
   const highlightSystemRef = useRef<HighlightSystem | null>(null);
   const virtualRendererRef = useRef<VirtualHighlightRenderer | null>(null);
@@ -239,7 +241,7 @@ useEffect(() => {
     // 降级方案：使用已废弃但可能仍可用的 API（仅作为后备）
     try {
       // caretRangeFromPoint 已废弃，但某些浏览器仍支持
-      const doc = document as any;
+      const doc = document as LegacyCaretDocument;
       if (doc.caretRangeFromPoint) {
         const range = doc.caretRangeFromPoint(x, y) as Range | null;
         if (range) {
@@ -281,7 +283,7 @@ useEffect(() => {
             };
           }
         }
-      } catch (e) {
+      } catch {
         // 忽略错误，继续查找
       }
     }
@@ -511,7 +513,7 @@ useEffect(() => {
             if (!newRange) {
               try {
                 // caretRangeFromPoint 已废弃，但某些浏览器仍支持
-                const doc = document as any;
+                const doc = document as LegacyCaretDocument;
                 if (doc.caretRangeFromPoint) {
                   const caretRange = doc.caretRangeFromPoint(e.clientX, e.clientY) as Range | null;
                   if (caretRange) {
@@ -1729,7 +1731,14 @@ useEffect(() => {
       // 移除临时高亮
       removeTemporaryHighlight();
     }
-  }, [currentChapter, bookId, restoreAllHighlights, clearTempHighlightOverlay]);
+  }, [
+    currentChapter,
+    bookId,
+    restoreAllHighlights,
+    clearTempHighlightOverlay,
+    removeStickySelection,
+    removeTemporaryHighlight,
+  ]);
 
   // 创建划线并添加一条笔记
   const handleAddNote = useCallback(async () => {

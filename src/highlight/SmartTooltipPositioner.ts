@@ -25,7 +25,6 @@ export class SmartTooltipPositioner {
     const firstLineRect = this.getFirstLineRect(range) || rect;
 
     let tooltipX: number;
-    let tooltipY: number;
 
     // 判断是否占满一行（宽度接近容器宽度）
     const containerWidth = container.clientWidth;
@@ -40,7 +39,7 @@ export class SmartTooltipPositioner {
     }
 
     // 垂直方向：在划线第一行上方固定距离（容器坐标系）
-    tooltipY = (firstLineRect.top - containerRect.top) - this.TOOLTIP_OFFSET;
+    const tooltipY = (firstLineRect.top - containerRect.top) - this.TOOLTIP_OFFSET;
 
     return { x: tooltipX, y: tooltipY };
   }

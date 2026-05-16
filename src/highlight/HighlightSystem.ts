@@ -42,6 +42,10 @@ export interface Highlight {
   tags?: string[];
 }
 
+type RangeWithOptionalIntersects = Range & {
+  intersectsNode?: (node: Node) => boolean;
+};
+
 export class HighlightSystem {
   public highlights: Map<string, Highlight> = new Map();
   private container: HTMLElement | null = null;
@@ -1004,10 +1008,8 @@ export class HighlightSystem {
     color: string
   ): HTMLSpanElement | null {
     const doc = range.startContainer.ownerDocument || document;
-    const root =
-      (this as any).container ||
-      (range.commonAncestorContainer as Element | null) ||
-      doc.body;
+    const root: Node = this.container || range.commonAncestorContainer || doc.body;
+    const rangeWithIntersects = range as RangeWithOptionalIntersects;
 
     const wrappers: HTMLSpanElement[] = [];
 
@@ -1027,22 +1029,22 @@ export class HighlightSystem {
 
       // 判断是否与所选范围相交
       let intersects = false;
-      if (typeof (range as any).intersectsNode === "function") {
+      if (typeof rangeWithIntersects.intersectsNode === "function") {
         try {
-          intersects = (range as any).intersectsNode(textNode);
+          intersects = rangeWithIntersects.intersectsNode(textNode);
         } catch {
           intersects = false;
         }
       } else {
         // Fallback: 利用 selectNodeContents + compareBoundaryPoints
-      const textRange = doc.createRange();
-      textRange.selectNodeContents(textNode);
+        const textRange = doc.createRange();
+        textRange.selectNodeContents(textNode);
         const endBeforeStart =
           textRange.compareBoundaryPoints(Range.END_TO_START, range) < 0;
         const startAfterEnd =
           textRange.compareBoundaryPoints(Range.START_TO_END, range) > 0;
         intersects = !(endBeforeStart || startAfterEnd);
-        }
+      }
 
       if (!intersects) continue;
 
@@ -1053,7 +1055,7 @@ export class HighlightSystem {
         range.endContainer === textNode ? range.endOffset : textNode.length;
 
       if (startOffset < endOffset) {
-      textNodesToProcess.push({ node: textNode, startOffset, endOffset });
+        textNodesToProcess.push({ node: textNode, startOffset, endOffset });
       }
     }
 

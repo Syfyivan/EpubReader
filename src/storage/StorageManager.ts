@@ -135,9 +135,9 @@ export class StorageManager {
         if (oldVersion < 3) {
           // 为 highlights 增加 by-tag 索引
           const highlightStore = tx.objectStore("highlights");
-          try {
+          if (!highlightStore.indexNames.contains("by-tag")) {
             highlightStore.createIndex("by-tag", "tags", { multiEntry: true });
-          } catch {}
+          }
         }
       },
     });
