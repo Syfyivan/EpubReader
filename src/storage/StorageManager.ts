@@ -341,8 +341,12 @@ export class StorageManager {
   ): Promise<BookMetadata | undefined> {
     if (!this.db) await this.init();
 
-    const existing = await this.getBook(bookId);
-    if (!existing) return undefined;
+    const tx = this.db!.transaction("books", "readwrite");
+    const existing = this.normalizeBookMetadata(await tx.store.get(bookId));
+    if (!existing) {
+      await tx.done;
+      return undefined;
+    }
 
     const updated: BookMetadata = {
       ...existing,
@@ -351,7 +355,6 @@ export class StorageManager {
       updatedAt: Date.now(),
     };
 
-    const tx = this.db!.transaction("books", "readwrite");
     await tx.store.put(updated);
     await tx.done;
     return updated;
