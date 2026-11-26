@@ -34,6 +34,7 @@ export class EpubParser {
   private opfPath: string = '';
   private basePath: string = '';
   private chapterCache: Map<string, string> = new Map();
+  private pendingChapters = new Map<string, Promise<string>>();
   private maxCacheSize: number = 10; // 最多缓存10个章节
 
   // 类型守卫：判断是否为文件条目（具有 getData 方法）
@@ -42,9 +43,14 @@ export class EpubParser {
   }
 
   private async openArchive(reader: zip.Reader<unknown>): Promise<void> {
-    this.zipReader = new zip.ZipReader(reader);
+    const archive = new zip.ZipReader(reader);
+    this.zipReader = archive;
     this.entries.clear();
-    for (const entry of await this.zipReader.getEntries()) {
+    this.chapterCache.clear();
+    this.pendingChapters.clear();
+    const entries = await archive.getEntries();
+    if (this.zipReader !== archive) return;
+    for (const entry of entries) {
       // Match the first entry, as the previous linear lookup did.
       if (!this.entries.has(entry.filename)) this.entries.set(entry.filename, entry);
     }
@@ -527,10 +533,11 @@ export class EpubParser {
    * 流式加载章节内容
    */
   async loadChapter(chapterId: string): Promise<string> {
-    // 检查缓存
-    if (this.chapterCache.has(chapterId)) {
-      return this.chapterCache.get(chapterId)!;
-    }
+    const cached = this.chapterCache.get(chapterId);
+    if (cached !== undefined) return cached;
+
+    const pending = this.pendingChapters.get(chapterId);
+    if (pending) return pending;
 
     const chapter = this.chapters.find((ch) => ch.id === chapterId);
     if (!chapter) {
@@ -542,28 +549,27 @@ export class EpubParser {
       throw new Error(`Chapter file not found: ${chapter.href}`);
     }
 
-    try {
-      const textWriter = new zip.TextWriter();
-      const content = await entry.getData(textWriter);
-
-      // 处理 HTML 内容
-      const processedContent = this.processChapterContent(content, chapter.href);
-
-      // 缓存管理
-      if (this.chapterCache.size >= this.maxCacheSize) {
-        // 删除最早的缓存项
-        const first = this.chapterCache.keys().next();
-        if (!first.done && first.value !== undefined) {
-          this.chapterCache.delete(first.value as string);
+    const loading = Promise.resolve()
+      .then(async () => this.processChapterContent(await entry.getData(new zip.TextWriter()), chapter.href))
+      .then(content => {
+        if (this.pendingChapters.get(chapterId) === loading) {
+          const oldest = this.chapterCache.keys().next();
+          if (this.chapterCache.size >= this.maxCacheSize && !oldest.done) {
+            this.chapterCache.delete(oldest.value);
+          }
+          this.chapterCache.set(chapterId, content);
         }
-      }
-      this.chapterCache.set(chapterId, processedContent);
-
-      return processedContent;
-    } catch (error) {
-      console.error('Failed to load chapter:', error);
-      throw error;
-    }
+        return content;
+      })
+      .catch(error => {
+        console.error('Failed to load chapter:', error);
+        throw error;
+      })
+      .finally(() => {
+        if (this.pendingChapters.get(chapterId) === loading) this.pendingChapters.delete(chapterId);
+      });
+    this.pendingChapters.set(chapterId, loading);
+    return loading;
   }
 
   /**
@@ -652,13 +658,13 @@ export class EpubParser {
    * 清理资源
    */
   async close(): Promise<void> {
-    if (this.zipReader) {
-      await this.zipReader.close();
-      this.zipReader = null;
-    }
+    const archive = this.zipReader;
+    this.zipReader = null;
     this.entries.clear();
     this.chapters = [];
     this.chapterCache.clear();
+    this.pendingChapters.clear();
+    await archive?.close();
   }
 
   /**
