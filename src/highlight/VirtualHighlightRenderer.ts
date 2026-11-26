@@ -3,8 +3,7 @@
  * 实现虚拟滚动下的实时渲染优化，支持万级划线数据的60fps流畅展示
  */
 
-import type { Highlight } from "./HighlightSystem";
-import { HighlightSystem } from "./HighlightSystem";
+import type { Highlight, HighlightSystem } from "./HighlightSystem";
 
 export interface ViewportInfo {
   scrollTop: number;
@@ -79,23 +78,21 @@ export class VirtualHighlightRenderer {
    */
   private binarySearchByPosition(targetY: number, findStart: boolean): number {
     let left = 0;
-    let right = this.sortedHighlights.length - 1;
+    let right = this.sortedHighlights.length;
 
-    while (left <= right) {
+    while (left < right) {
       const mid = Math.floor((left + right) / 2);
       const highlight = this.sortedHighlights[mid];
       const highlightY = this.estimateHighlightPosition(highlight);
 
-      if (highlightY < targetY) {
+      if (highlightY < targetY || (!findStart && highlightY === targetY)) {
         left = mid + 1;
-      } else if (highlightY > targetY) {
-        right = mid - 1;
       } else {
-        return mid;
+        right = mid;
       }
     }
 
-    return findStart ? left : right;
+    return left;
   }
 
   /**
