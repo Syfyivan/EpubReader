@@ -25,7 +25,7 @@ export interface EpubMetadata {
 
 export class EpubParser {
   private zipReader: zip.ZipReader<zip.Reader<unknown>> | null = null;
-  private entries: zip.Entry[] = [];
+  private entries = new Map<string, zip.Entry>();
   private chapters: EpubChapter[] = [];
   private metadata: EpubMetadata = {
     title: '',
@@ -37,8 +37,17 @@ export class EpubParser {
   private maxCacheSize: number = 10; // 最多缓存10个章节
 
   // 类型守卫：判断是否为文件条目（具有 getData 方法）
-  private isFileEntry(entry: zip.Entry): entry is zip.FileEntry {
+  private isFileEntry(entry: zip.Entry | undefined): entry is zip.FileEntry {
     return !!entry && 'getData' in (entry as object);
+  }
+
+  private async openArchive(reader: zip.Reader<unknown>): Promise<void> {
+    this.zipReader = new zip.ZipReader(reader);
+    this.entries.clear();
+    for (const entry of await this.zipReader.getEntries()) {
+      // Match the first entry, as the previous linear lookup did.
+      if (!this.entries.has(entry.filename)) this.entries.set(entry.filename, entry);
+    }
   }
 
   /**
@@ -68,9 +77,7 @@ export class EpubParser {
    * 从本地文件加载
    */
   private async loadFromFile(file: File): Promise<void> {
-    const reader = new zip.BlobReader(file);
-    this.zipReader = new zip.ZipReader(reader);
-    this.entries = await this.zipReader.getEntries();
+    await this.openArchive(new zip.BlobReader(file));
   }
 
   /**
@@ -81,19 +88,15 @@ export class EpubParser {
       useRangeHeader: true,
       preventHeadRequest: false,
     });
-    this.zipReader = new zip.ZipReader(reader);
-    this.entries = await this.zipReader.getEntries();
+    await this.openArchive(reader);
   }
 
   /**
    * 解析 container.xml 找到 OPF 文件位置
    */
   private async parseContainer(): Promise<void> {
-    const containerEntry = this.entries.find(
-      (entry) =>
-        entry.filename === 'META-INF/container.xml' ||
-        entry.filename === 'META-INF\\container.xml'
-    );
+    const containerEntry = this.entries.get('META-INF/container.xml') ??
+      this.entries.get('META-INF\\container.xml');
 
     if (!containerEntry || !this.isFileEntry(containerEntry)) {
       throw new Error('Invalid EPUB: container.xml not found');
@@ -120,9 +123,7 @@ export class EpubParser {
    * 解析 OPF 文件获取元数据和章节信息
    */
   private async parseOpf(): Promise<void> {
-    const opfEntry = this.entries.find(
-      (entry) => entry.filename === this.opfPath
-    );
+    const opfEntry = this.entries.get(this.opfPath);
 
     if (!opfEntry || !this.isFileEntry(opfEntry)) {
       throw new Error('Invalid EPUB: OPF file not found');
@@ -282,9 +283,7 @@ export class EpubParser {
    * 解析 NCX 文件获取章节标题
    */
   private async parseNcx(ncxPath: string): Promise<void> {
-    const ncxEntry = this.entries.find(
-      (entry) => entry.filename === ncxPath
-    );
+    const ncxEntry = this.entries.get(ncxPath);
 
     if (!ncxEntry || !this.isFileEntry(ncxEntry)) {
       console.warn('⚠️ NCX文件未找到或无法读取:', ncxPath);
@@ -396,9 +395,7 @@ export class EpubParser {
    * 解析 NAV 文件获取章节标题
    */
   private async parseNav(navPath: string): Promise<void> {
-    const navEntry = this.entries.find(
-      (entry) => entry.filename === navPath
-    );
+    const navEntry = this.entries.get(navPath);
 
     if (!navEntry || !this.isFileEntry(navEntry)) {
       console.warn('⚠️ NAV文件未找到或无法读取:', navPath);
@@ -540,7 +537,7 @@ export class EpubParser {
       throw new Error(`Chapter not found: ${chapterId}`);
     }
 
-    const entry = this.entries.find((e) => e.filename === chapter.href);
+    const entry = this.entries.get(chapter.href);
     if (!entry || !this.isFileEntry(entry)) {
       throw new Error(`Chapter file not found: ${chapter.href}`);
     }
@@ -600,7 +597,7 @@ export class EpubParser {
    * 加载资源（图片等）
    */
   async loadResource(resourcePath: string): Promise<Blob | null> {
-    const entry = this.entries.find((e) => e.filename === resourcePath);
+    const entry = this.entries.get(resourcePath);
     if (!entry || !this.isFileEntry(entry)) {
       return null;
     }
@@ -644,18 +641,7 @@ export class EpubParser {
     if (!this.metadata.cover) return null;
     
     try {
-      // 检查封面文件是否存在
-      const coverPath = this.normalizePath(this.metadata.cover);
-      const coverEntry = this.entries.find(
-        (entry) => entry.filename === coverPath
-      );
-      
-      if (!coverEntry || !this.isFileEntry(coverEntry)) {
-        console.warn('⚠️ 封面文件不存在:', coverPath);
-        return null;
-      }
-      
-      return await this.loadResource(this.metadata.cover!);
+      return await this.loadResource(this.normalizePath(this.metadata.cover));
     } catch (error) {
       console.warn('⚠️ 加载封面失败:', error);
       return null;
@@ -670,7 +656,7 @@ export class EpubParser {
       await this.zipReader.close();
       this.zipReader = null;
     }
-    this.entries = [];
+    this.entries.clear();
     this.chapters = [];
     this.chapterCache.clear();
   }
