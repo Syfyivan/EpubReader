@@ -11,6 +11,7 @@ import type { BookMetadata } from '../storage/StorageManager';
 import { aiClient, type AIAnalysis } from '../api/aiClient';
 import { NoteManager } from '../components/NoteManager';
 import { SmartTooltipPositioner } from '../highlight/SmartTooltipPositioner';
+import { chapterDisplayTitle } from './chapter-title';
 import './Read.css';
 
 interface ReadProps {
@@ -2226,14 +2227,7 @@ useEffect(() => {
               const levelClass =
                 level >= 3 ? 'chapter-level-3' : `chapter-level-${level}`;
               const isActive = currentChapter?.id === chapter.id;
-              const displayTitle = (() => {
-                const t = (chapter.title || '').trim();
-                if (t && !/^id\d{3,}$/.test(t)) return t;
-                // 退化为根据 href 文件名
-                const href = chapter.href || '';
-                const base = href.split('/').pop() || chapter.id;
-                return decodeURIComponent(base).replace(/\.[^.]+$/, '') || chapter.id;
-              })();
+              const displayTitle = chapterDisplayTitle(chapter);
               return (
                 <li
                   key={`${chapter.id}-${index}`}
